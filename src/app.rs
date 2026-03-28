@@ -1,4 +1,3 @@
-use std::fmt::format;
 use color_eyre::eyre::Result;
 use crossterm::event;
 use crossterm::event::{KeyCode, KeyEventKind};
@@ -6,7 +5,8 @@ use ratatui::{DefaultTerminal, Frame};
 use ratatui::layout::{Constraint, Layout, Margin, Rect};
 use ratatui::style::Style;
 use ratatui::widgets::{Block, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
-use log::log;
+
+use crate::models::column::Column;
 
 enum InputMode {
     Normal,
@@ -14,18 +14,22 @@ enum InputMode {
     Visual,
 }
 
-pub struct App<'a> {
+pub struct App {
     input_mode: InputMode,
-    columns: Vec<&'a str>,
+    columns: Vec<Column>,
     scroll_x: usize,
     scroll_x_state: ScrollbarState,
     focused_column: usize,
     area_width: u16,
 }
 
-impl<'a> App<'a> {
+impl App {
     pub(crate) fn new() -> Self {
-        let columns = vec!["Column1", "Column2", "Column3", "Column4", "Column5"];
+        let mut columns = Vec::new();
+        columns.push(Column::new("TODO".to_string(), 50));
+        columns.push(Column::new("Doing".to_string(), 50));
+        columns.push(Column::new("Waiting Review".to_string(), 50));
+        columns.push(Column::new("Done".to_string(), 50));
 
         Self {
             input_mode: InputMode::Normal,
@@ -100,8 +104,8 @@ impl<'a> App<'a> {
     }
 
     fn render_columns(&mut self, frame: &mut Frame, area: Rect) {
-        const column_width: u16 = 28;
         const column_gap: u16 = 4;
+
 
         let content_width = self.compute_total_width();
         self.scroll_x_state = self.scroll_x_state.content_length(content_width).position(self.scroll_x);
@@ -119,8 +123,10 @@ impl<'a> App<'a> {
         let visible_on_the_right = (self.scroll_x as u16)  + columns_area.width;
 
         for i in 0..self.columns.len() {
-            let column_left = i as u16 * (column_width + column_gap);
-            let column_rigt = column_left + column_width;
+            let ongoing_column = &self.columns[i];
+
+            let column_left = i as u16 * (ongoing_column.width.clone() as u16 + column_gap);
+            let column_rigt = column_left + ongoing_column.width.clone() as u16;
 
             if column_rigt <= visible_on_the_left || column_left >= visible_on_the_right {
                 continue;
@@ -128,7 +134,7 @@ impl<'a> App<'a> {
 
             let screen_x = columns_area.x.saturating_add(column_left.saturating_sub(visible_on_the_left));
             let hidden_left = visible_on_the_left.saturating_sub(column_left);
-            let visible_width = column_width.saturating_sub(hidden_left).min(columns_area.right().saturating_sub(screen_x));
+            let visible_width = (ongoing_column.width.clone() as u16).saturating_sub(hidden_left).min(columns_area.right().saturating_sub(screen_x));
 
             if visible_width <= 0 {
                 continue;
@@ -141,10 +147,12 @@ impl<'a> App<'a> {
                 height: columns_area.height,
             };
 
+            let ongoing_column = &self.columns[i];
+
             if i == self.focused_column {
-                frame.render_widget(Block::bordered().title(format!("Column {}", i)).border_style(Style::new().bold()), column);
+                frame.render_widget(Block::bordered().title(ongoing_column.name.clone()).border_style(Style::new().bold()), column);
             } else {
-                frame.render_widget(Block::bordered().title(format!("Column {}", i)), column);
+                frame.render_widget(Block::bordered().title(ongoing_column.name.clone()), column);
             }
         }
 
@@ -158,12 +166,16 @@ impl<'a> App<'a> {
     }
 
     fn create_column(&mut self) {
-        self.columns.push("New Column");
+        self.columns.push(Column::new("New column".to_string(), 35));
     }
 
     fn delete_column(&mut self, column_index: usize) {
         if self.columns.len() > 0 {
             self.columns.remove(column_index);
+
+            if self.focused_column == column_index {
+                self.focused_column = self.focused_column.saturating_sub(1);
+            }
         }
     }
 

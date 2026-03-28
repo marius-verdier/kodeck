@@ -1,4 +1,5 @@
 mod app;
+mod models;
 
 use color_eyre::Result;
 use crate::app::App;
