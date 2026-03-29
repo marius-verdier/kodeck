@@ -7,6 +7,7 @@ use ratatui::style::{Color, Style};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
 
 use crate::models::column::{Column, CreatingColumnPopup};
+use crate::models::task::{CreatingTaskPopup, Task, TaskPriority};
 
 const SCROLL_SIZE: usize = 5;
 const COLUMNS_GAP: u16 = 4;
@@ -18,6 +19,9 @@ enum InputMode {
 
 enum InputType {
     CreatingColumn,
+    CreatingTaskTitle,
+    CreatingTaskDescription,
+    CreatingTaskPriority,
 }
 
 pub struct App {
@@ -29,6 +33,7 @@ pub struct App {
     area_width: u16,
 
     creating_column_popup: Option<CreatingColumnPopup>,
+    creating_task_popup: Option<CreatingTaskPopup>,
     active_input: Option<InputType>
 }
 
@@ -48,7 +53,8 @@ impl App {
             area_width: 0,
             focused_column: 0,
             creating_column_popup: None,
-            active_input: None
+            creating_task_popup: None,
+            active_input: None,
         }
     }
 
@@ -62,7 +68,11 @@ impl App {
                         KeyCode::Char('i') => self.input_mode = InputMode::Editing,
                         KeyCode::Char('c') => {
                             self.input_mode = InputMode::Editing;
-                            self.toggle_creation_popup();
+                            self.toggle_column_creation_popup();
+                        }
+                        KeyCode::Char('t') => {
+                            self.input_mode = InputMode::Editing;
+                            self.toggle_task_creation_popup();
                         }
                         KeyCode::Char('d') => {
                             self.delete_column(self.focused_column)
@@ -87,8 +97,11 @@ impl App {
                         KeyCode::Esc => {
                             match self.active_input {
                                 Some(InputType::CreatingColumn) => {
-                                    self.toggle_creation_popup()
+                                    self.toggle_column_creation_popup()
                                 }
+                                Some(InputType::CreatingTaskTitle) => {}
+                                Some(InputType::CreatingTaskDescription) => {}
+                                Some(InputType::CreatingTaskPriority) => {}
                                 None => {}
                             }
                             self.active_input = None;
@@ -101,6 +114,15 @@ impl App {
                                         popup.input.push(c);
                                     }
                                 }
+                                Some(InputType::CreatingTaskTitle) => {
+                                    if let Some(popup) = &mut self.creating_task_popup {
+                                        popup.title.push(c);
+                                    }}
+                                Some(InputType::CreatingTaskDescription) => {
+                                    if let Some(popup) = &mut self.creating_task_popup {
+                                        popup.description.push(c);
+                                    }}
+                                Some(InputType::CreatingTaskPriority) => {}
                                 None => {}
                             }
                         }
@@ -111,6 +133,15 @@ impl App {
                                         popup.input.pop();
                                     }
                                 }
+                                Some(InputType::CreatingTaskTitle) => {
+                                    if let Some(popup) = &mut self.creating_task_popup {
+                                        popup.title.pop();
+                                    }}
+                                Some(InputType::CreatingTaskDescription) => {
+                                    if let Some(popup) = &mut self.creating_task_popup {
+                                        popup.description.pop();
+                                    }}
+                                Some(InputType::CreatingTaskPriority) => {}
                                 None => {}
                             }
                         }
@@ -124,7 +155,53 @@ impl App {
                                     self.active_input = None;
                                     self.input_mode = InputMode::Normal;
                                 }
+                                Some(InputType::CreatingTaskTitle) => {
+                                    if self.safe_create_task() { continue; }
+                                }
+                                Some(InputType::CreatingTaskDescription) => {
+                                    if self.safe_create_task() { continue; }
+                                }
+                                Some(InputType::CreatingTaskPriority) => {
+                                    if self.safe_create_task() { continue; }
+                                }
                                 None => {}
+                            }
+                        }
+                        KeyCode::Tab => {
+                            match self.active_input {
+                                Some(InputType::CreatingTaskTitle) => {
+                                    self.active_input = Some(InputType::CreatingTaskDescription);
+                                }
+                                Some(InputType::CreatingTaskDescription) => {
+                                    self.active_input = Some(InputType::CreatingTaskPriority);
+                                }
+                                Some(InputType::CreatingTaskPriority) => {
+                                    self.active_input = Some(InputType::CreatingTaskTitle);
+                                }
+                                None => {}
+                                _ => {}
+                            }
+                        }
+                        KeyCode::Right => {
+                            if matches!(self.active_input, Some(InputType::CreatingTaskPriority)) {
+                                if let Some(popup) = &mut self.creating_task_popup {
+                                    popup.priority = match popup.priority {
+                                        TaskPriority::LOW => TaskPriority::MEDIUM,
+                                        TaskPriority::MEDIUM => TaskPriority::HIGH,
+                                        TaskPriority::HIGH => TaskPriority::LOW,
+                                    };
+                                }
+                            }
+                        }
+                        KeyCode::Left => {
+                            if matches!(self.active_input, Some(InputType::CreatingTaskPriority)) {
+                                if let Some(popup) = &mut self.creating_task_popup {
+                                    popup.priority = match popup.priority {
+                                        TaskPriority::LOW => TaskPriority::HIGH,
+                                        TaskPriority::MEDIUM => TaskPriority::LOW,
+                                        TaskPriority::HIGH => TaskPriority::MEDIUM,
+                                    };
+                                }
                             }
                         }
                         _ => {}
@@ -134,6 +211,27 @@ impl App {
             }
         }
         Ok(())
+    }
+
+    fn safe_create_task(&mut self) -> bool {
+        if let Some(popup) = &self.creating_task_popup {
+            if popup.title.is_empty() || popup.description.is_empty() {
+                // TODO : DISPLAY ERROR WHEN EMPTY ON CREATION
+                return true;
+            }
+
+            let task: Task = Task::new(
+                popup.title.clone(),
+                popup.description.clone(),
+                popup.priority.clone(),
+                self.columns[self.focused_column].tasks.len()
+            );
+            self.columns[self.focused_column].tasks.push(task);
+        }
+        self.active_input = None;
+        self.input_mode = InputMode::Normal;
+        self.creating_task_popup = None;
+        false
     }
 
     fn print_mode(&self) -> String {
@@ -203,11 +301,36 @@ impl App {
 
             let ongoing_column = &self.columns[i];
 
-            if i == self.focused_column {
-                frame.render_widget(Block::bordered().title(ongoing_column.name.clone()).border_style(Style::new().bold()), column);
+            let block = if i == self.focused_column {
+                Block::bordered().title(ongoing_column.name.clone()).border_style(Style::new().bold())
             } else {
-                frame.render_widget(Block::bordered().title(ongoing_column.name.clone()), column);
+                Block::bordered().title(ongoing_column.name.clone())
+            };
+
+            let inner = block.inner(column);
+            frame.render_widget(block, column);
+
+            let task_constraints: Vec<Constraint> = ongoing_column.tasks
+                .iter()
+                .map(|_| Constraint::Length(3))
+                .collect();
+
+            if !task_constraints.is_empty() {
+                let task_areas = Layout::vertical(task_constraints).split(inner);
+                for (j, task) in ongoing_column.tasks.iter().enumerate() {
+                    let priority_color = match task.priority {
+                        TaskPriority::LOW => Color::Blue,
+                        TaskPriority::MEDIUM => Color::Yellow,
+                        TaskPriority::HIGH => Color::Red,
+                    };
+                    let task_block = Block::bordered()
+                        .border_style(Style::default().fg(priority_color));
+                    let task_inner = task_block.inner(task_areas[j]);
+                    frame.render_widget(task_block, task_areas[j]);
+                    frame.render_widget(Paragraph::new(task.title.as_str()), task_inner);
+                }
             }
+
         }
 
         if needs_scroll {
@@ -218,6 +341,12 @@ impl App {
             }), &mut self.scroll_x_state);
         }
 
+        self.render_column_creation_popup(frame, area);
+
+        self.render_task_creation_popup(frame, area);
+    }
+
+    fn render_column_creation_popup(&mut self, frame: &mut Frame, area: Rect) {
         if let Some(popup) = &self.creating_column_popup {
             let popup_block = Block::default()
                 .title("New column name")
@@ -233,7 +362,77 @@ impl App {
         }
     }
 
-    fn toggle_creation_popup(&mut self) {
+    fn render_task_creation_popup(&mut self, frame: &mut Frame, area: Rect) {
+        if let Some(t_popup) = &self.creating_task_popup {
+            let popup_block = Block::default()
+                .title("Create a new task") // IDEA : MAYBE ADD COLUMN NAME
+                .borders(Borders::ALL)
+                .style(Style::default().bg(Color::DarkGray));
+
+            let area = area.centered(Constraint::Percentage(60), Constraint::Min(11));
+            let inner_area = popup_block.inner(area);
+
+            let layout = Layout::vertical([
+                Constraint::Length(3),
+                Constraint::Min(3),
+                Constraint::Length(3),
+            ]);
+            let [title_area, description_area, priority_area] = inner_area.layout(&layout);
+
+            frame.render_widget(Clear, area);
+            frame.render_widget(popup_block, area);
+
+            let title_block = Block::default()
+                .title("Title")
+                .borders(Borders::ALL)
+                .border_style(if matches!(self.active_input, Some(InputType::CreatingTaskTitle)) {
+                    Style::default().fg(Color::Yellow)
+                } else {
+                    Style::default()
+                });
+            frame.render_widget(Paragraph::new(t_popup.title.as_str()).block(title_block), title_area);
+
+            let desc_block = Block::default()
+                .title("Description")
+                .borders(Borders::ALL)
+                .border_style(if matches!(self.active_input, Some(InputType::CreatingTaskDescription)) {
+                    Style::default().fg(Color::Yellow)
+                } else {
+                    Style::default()
+                });
+            frame.render_widget(Paragraph::new(t_popup.description.as_str()).block(desc_block), description_area);
+
+            // Priority
+            let priority_block = Block::default()
+                .title("Priority")
+                .borders(Borders::ALL);
+            let inner_priority = priority_block.inner(priority_area);
+            frame.render_widget(priority_block, priority_area);
+
+            let priority_layout = Layout::horizontal([
+                Constraint::Fill(1),
+                Constraint::Fill(1),
+                Constraint::Fill(1),
+            ]);
+            let [low_area, medium_area, high_area] = inner_priority.layout(&priority_layout);
+
+            let low_style = if matches!(t_popup.priority, TaskPriority::LOW) {
+                Style::default().bg(Color::Blue)
+            } else { Style::default() };
+            let medium_style = if matches!(t_popup.priority, TaskPriority::MEDIUM) {
+                Style::default().bg(Color::Yellow)
+            } else { Style::default() };
+            let high_style = if matches!(t_popup.priority, TaskPriority::HIGH) {
+                Style::default().bg(Color::Red)
+            } else { Style::default() };
+
+            frame.render_widget(Paragraph::new("LOW").style(low_style).alignment(ratatui::layout::Alignment::Center), low_area);
+            frame.render_widget(Paragraph::new("MEDIUM").style(medium_style).alignment(ratatui::layout::Alignment::Center), medium_area);
+            frame.render_widget(Paragraph::new("HIGH").style(high_style).alignment(ratatui::layout::Alignment::Center), high_area);
+        }
+    }
+
+    fn toggle_column_creation_popup(&mut self) {
         match self.creating_column_popup {
             Some(_) => {
                 self.creating_column_popup = None;
@@ -242,6 +441,19 @@ impl App {
             None => {
                 self.creating_column_popup = Some(CreatingColumnPopup::new());
                 self.active_input = Some(InputType::CreatingColumn);
+            }
+        }
+    }
+
+    fn toggle_task_creation_popup(&mut self) {
+        match self.creating_task_popup {
+            Some(_) => {
+                self.creating_task_popup = None;
+                self.active_input = None;
+            }
+            None => {
+                self.creating_task_popup = Some(CreatingTaskPopup::new());
+                self.active_input = Some(InputType::CreatingTaskTitle)
             }
         }
     }
