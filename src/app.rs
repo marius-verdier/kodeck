@@ -3,15 +3,21 @@ use crossterm::event;
 use crossterm::event::{KeyCode, KeyEventKind};
 use ratatui::{DefaultTerminal, Frame};
 use ratatui::layout::{Constraint, Layout, Margin, Rect};
-use ratatui::style::Style;
-use ratatui::widgets::{Block, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
+use ratatui::style::{Color, Style};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
 
-use crate::models::column::Column;
+use crate::models::column::{Column, CreatingColumnPopup};
 
+const SCROLL_SIZE: usize = 5;
+const COLUMNS_GAP: u16 = 4;
 enum InputMode {
     Normal,
     Editing,
     Visual,
+}
+
+enum InputType {
+    CreatingColumn,
 }
 
 pub struct App {
@@ -21,6 +27,9 @@ pub struct App {
     scroll_x_state: ScrollbarState,
     focused_column: usize,
     area_width: u16,
+
+    creating_column_popup: Option<CreatingColumnPopup>,
+    active_input: Option<InputType>
 }
 
 impl App {
@@ -35,9 +44,11 @@ impl App {
             input_mode: InputMode::Normal,
             columns,
             scroll_x: 0,
-            scroll_x_state: ScrollbarState::new(100),
+            scroll_x_state: ScrollbarState::new(5),
             area_width: 0,
             focused_column: 0,
+            creating_column_popup: None,
+            active_input: None
         }
     }
 
@@ -50,7 +61,8 @@ impl App {
                     InputMode::Normal => match key.code {
                         KeyCode::Char('i') => self.input_mode = InputMode::Editing,
                         KeyCode::Char('c') => {
-                            self.create_column()
+                            self.input_mode = InputMode::Editing;
+                            self.toggle_creation_popup();
                         }
                         KeyCode::Char('d') => {
                             self.delete_column(self.focused_column)
@@ -62,7 +74,8 @@ impl App {
                             self.scroll_right()
                         }
                         KeyCode::Tab => {
-                            self.focused_column = self.focused_column.saturating_add(1) % self.columns.len()
+                            self.focused_column = self.focused_column.saturating_add(1) % self.columns.len();
+                            self.scroll_to_focused_column();
                         }
                         KeyCode::BackTab => {
                             self.focused_column = self.focused_column.checked_sub(1).unwrap_or(self.columns.len() - 1)
@@ -71,7 +84,49 @@ impl App {
                         _ => {},
                     }
                     InputMode::Editing if key.kind == KeyEventKind::Press => match key.code {
-                        KeyCode::Esc => self.input_mode = InputMode::Normal,
+                        KeyCode::Esc => {
+                            match self.active_input {
+                                Some(InputType::CreatingColumn) => {
+                                    self.toggle_creation_popup()
+                                }
+                                None => {}
+                            }
+                            self.active_input = None;
+                            self.input_mode = InputMode::Normal;
+                        }
+                        KeyCode::Char(c) => {
+                            match self.active_input {
+                                Some(InputType::CreatingColumn) => {
+                                    if let Some(popup) = &mut self.creating_column_popup {
+                                        popup.input.push(c);
+                                    }
+                                }
+                                None => {}
+                            }
+                        }
+                        KeyCode::Backspace => {
+                            match self.active_input {
+                                Some(InputType::CreatingColumn) => {
+                                    if let Some(popup) = &mut self.creating_column_popup {
+                                        popup.input.pop();
+                                    }
+                                }
+                                None => {}
+                            }
+                        }
+                        KeyCode::Enter => {
+                            match self.active_input {
+                                Some(InputType::CreatingColumn) => {
+                                    if let Some(popup) = &self.creating_column_popup {
+                                        self.columns.push(Column::new(popup.input.clone(), 50));
+                                    }
+                                    self.creating_column_popup = None;
+                                    self.active_input = None;
+                                    self.input_mode = InputMode::Normal;
+                                }
+                                None => {}
+                            }
+                        }
                         _ => {}
                     }
                     _ => {}
@@ -104,11 +159,10 @@ impl App {
     }
 
     fn render_columns(&mut self, frame: &mut Frame, area: Rect) {
-        const column_gap: u16 = 4;
-
-
         let content_width = self.compute_total_width();
-        self.scroll_x_state = self.scroll_x_state.content_length(content_width).position(self.scroll_x);
+        self.scroll_x_state = self.scroll_x_state
+            .content_length(content_width.saturating_sub(self.area_width as usize))
+            .position(self.scroll_x);
         self.area_width = area.width;
         let needs_scroll = content_width > self.area_width as usize;
 
@@ -125,7 +179,7 @@ impl App {
         for i in 0..self.columns.len() {
             let ongoing_column = &self.columns[i];
 
-            let column_left = i as u16 * (ongoing_column.width.clone() as u16 + column_gap);
+            let column_left = i as u16 * (ongoing_column.width.clone() as u16 + COLUMNS_GAP);
             let column_rigt = column_left + ongoing_column.width.clone() as u16;
 
             if column_rigt <= visible_on_the_left || column_left >= visible_on_the_right {
@@ -163,10 +217,33 @@ impl App {
                 vertical: 0,
             }), &mut self.scroll_x_state);
         }
+
+        if let Some(popup) = &self.creating_column_popup {
+            let popup_block = Block::default()
+                .title("New column name")
+                .borders(Borders::ALL)
+                .style(Style::default().bg(Color::DarkGray));
+
+            let area = area.centered(Constraint::Percentage(60), Constraint::Length(3));
+            let inner_area = popup_block.inner(area);
+
+            frame.render_widget(Clear, area);
+            frame.render_widget(popup_block, area);
+            frame.render_widget(Paragraph::new(popup.input.as_str()), inner_area);
+        }
     }
 
-    fn create_column(&mut self) {
-        self.columns.push(Column::new("New column".to_string(), 35));
+    fn toggle_creation_popup(&mut self) {
+        match self.creating_column_popup {
+            Some(_) => {
+                self.creating_column_popup = None;
+                self.active_input = None;
+            }
+            None => {
+                self.creating_column_popup = Some(CreatingColumnPopup::new());
+                self.active_input = Some(InputType::CreatingColumn);
+            }
+        }
     }
 
     fn delete_column(&mut self, column_index: usize) {
@@ -180,18 +257,47 @@ impl App {
     }
 
     fn compute_total_width(&self) -> usize {
-        return self.columns.len() * 30;
+        let mut total_width = 0;
+        for column in &self.columns {
+            total_width += column.width;
+        }
+
+        total_width
     }
 
     fn scroll_right(&mut self) {
-        if self.compute_total_width() > self.area_width as usize {
-            self.scroll_x = self.scroll_x.saturating_add(3);
+        let max_scroll = self.compute_total_width().saturating_sub(self.area_width as usize);
+        if self.scroll_x < max_scroll {
+            self.scroll_x = self.scroll_x.saturating_add(SCROLL_SIZE).min(max_scroll);
         }
     }
 
     fn scroll_left(&mut self) {
         if self.compute_total_width() > self.area_width as usize {
-            self.scroll_x = self.scroll_x.saturating_sub(3);
+            self.scroll_x = self.scroll_x.saturating_sub(SCROLL_SIZE);
+        }
+    }
+
+    fn left_space(&self, column_index: usize) -> usize {
+        let mut space: usize = 0;
+        for i in 0..column_index {
+            let col = &self.columns[i];
+            space = space.saturating_add(col.width);
+            space = space.saturating_add(COLUMNS_GAP as usize);
+        }
+
+        space
+    }
+
+    fn scroll_to_focused_column(&mut self) {
+        let column = &self.columns[self.focused_column];
+        let column_l = self.left_space(self.focused_column);
+        let column_r = column_l + column.width;
+
+        if column_r > self.scroll_x + self.area_width as usize {
+            self.scroll_x = column_r.saturating_sub(self.area_width as usize);
+        } else if column_l < self.scroll_x {
+            self.scroll_x = column_l;
         }
     }
 }

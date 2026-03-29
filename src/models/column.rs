@@ -17,3 +17,13 @@ impl Column {
         result
     }
 }
+
+pub struct CreatingColumnPopup {
+    pub input: String,
+}
+
+impl CreatingColumnPopup {
+    pub fn new() -> CreatingColumnPopup {
+        CreatingColumnPopup { input: String::new() }
+    }
+}
