@@ -1,4 +1,6 @@
+use tui_input::Input;
 use crate::models::task::Task;
+
 
 pub struct Column {
     pub name: String,
@@ -8,16 +10,20 @@ pub struct Column {
 
 impl Column {
     pub fn new(name: String, width: usize) -> Column {
-        Column { name, width, tasks: Vec::new() }
+        Column {
+            name,
+            width,
+            tasks: Vec::new()
+        }
     }
 }
 
 pub struct CreatingColumnPopup {
-    pub input: String,
+    pub input: Input,
 }
 
 impl CreatingColumnPopup {
     pub fn new() -> CreatingColumnPopup {
-        CreatingColumnPopup { input: String::new() }
+        CreatingColumnPopup { input: Input::default() }
     }
 }
