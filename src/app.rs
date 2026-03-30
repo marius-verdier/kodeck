@@ -32,16 +32,24 @@ pub struct App<'a> {
     scroll_x: usize,
     scroll_x_state: ScrollbarState,
     focused_column: usize,
+    focused_task: usize,
     area_width: u16,
     creating_column_popup: Option<CreatingColumnPopup>,
     creating_task_popup: Option<CreatingTaskPopup<'a>>,
-    active_input: Option<InputType>
+    active_input: Option<InputType>,
 }
-
+// TODO : IMPROVE UI
 impl App<'_> {
     pub(crate) fn new() -> Self {
         let mut columns = Vec::new();
-        columns.push(Column::new("TODO".to_string(), 50));
+
+        let mut first_c = Column::new("TODO".to_string(), 50);
+        first_c.tasks.push(Task::new("Task 1".to_string(), String::new(),TaskPriority::LOW, 0));
+        first_c.tasks.push(Task::new("Task 2".to_string(), String::new(),TaskPriority::MEDIUM, 1));
+        first_c.tasks.push(Task::new("Task 3".to_string(), String::new(),TaskPriority::LOW, 2));
+        first_c.tasks.push(Task::new("Task 4".to_string(), String::new(),TaskPriority::HIGH, 3));
+
+        columns.push(first_c);
         columns.push(Column::new("Doing".to_string(), 50));
         columns.push(Column::new("Waiting Review".to_string(), 50));
         columns.push(Column::new("Done".to_string(), 50));
@@ -53,6 +61,7 @@ impl App<'_> {
             scroll_x_state: ScrollbarState::new(5),
             area_width: 0,
             focused_column: 0,
+            focused_task: 0,
             creating_column_popup: None,
             creating_task_popup: None,
             active_input: None,
@@ -78,11 +87,31 @@ impl App<'_> {
                         KeyCode::Char('d') => {
                             self.delete_column(self.focused_column)
                         }
-                        KeyCode::Left => {
-                            self.scroll_left()
+                        KeyCode::Char('s') => {
+                            self.send_task_to_next();
                         }
-                        KeyCode::Right => {
-                            self.scroll_right()
+                        KeyCode::Char('S') => {
+                            self.send_task_to_prev();
+                        }
+                        // KeyCode::Left => {
+                        //     self.scroll_left()
+                        // }
+                        // KeyCode::Right => {
+                        //     self.scroll_right()
+                        // }
+                        KeyCode::Up => {
+                            let column = &self.columns[self.focused_column];
+                            if column.tasks.is_empty() {
+                                continue
+                            }
+                            self.focused_task = self.focused_task.wrapping_sub(1) % column.tasks.len();
+                        }
+                        KeyCode::Down => {
+                            let column = &self.columns[self.focused_column];
+                            if column.tasks.is_empty() {
+                                continue
+                            }
+                            self.focused_task = self.focused_task.wrapping_add(1) % column.tasks.len();
                         }
                         KeyCode::Tab => {
                             self.focused_column = self.focused_column.saturating_add(1) % self.columns.len();
@@ -396,7 +425,7 @@ impl App<'_> {
                         TaskPriority::HIGH => Color::Red,
                     };
                     let task_block = Block::bordered()
-                        .border_style(Style::default().fg(priority_color));
+                        .border_style(if self.focused_task == j && i == self.focused_column {Style::new().bold()} else {Style::default().fg(priority_color)});
                     let task_inner = task_block.inner(task_areas[j]);
                     frame.render_widget(task_block, task_areas[j]);
                     frame.render_widget(Paragraph::new(task.title.as_str()), task_inner);
@@ -512,11 +541,14 @@ impl App<'_> {
                     })
             );
 
+            if matches!(self.active_input, Some(InputType::CreatingTaskDescription)) {
+                t_popup.description.set_cursor_style(Style::default().add_modifier(ratatui::style::Modifier::REVERSED));
+            } else {
+                t_popup.description.set_cursor_style(Style::default());
+            }
+
             frame.render_widget(&t_popup.description, description_area);
 
-            // TODO : IMPLEMENT ratatui_textarea for description block
-
-            // Priority
             let priority_block = Block::default()
                 .title("Priority")
                 .borders(Borders::ALL)
@@ -606,6 +638,31 @@ impl App<'_> {
         if self.compute_total_width() > self.area_width as usize {
             self.scroll_x = self.scroll_x.saturating_sub(SCROLL_SIZE);
         }
+    }
+
+    fn send_task_to_next(&mut self) {
+        if self.focused_column == self.columns.len() -1 {
+            return;
+        }
+
+        self.send_task_to_column(self.focused_task, self.focused_column, self.focused_column +1);
+        self.focused_column = self.focused_column.saturating_add(1);
+        self.focused_task = self.columns[self.focused_column].tasks.len() -1;
+    }
+    fn send_task_to_prev(&mut self) {
+        if self.focused_column == 0 {
+            return;
+        }
+
+        self.send_task_to_column(self.focused_task, self.focused_column, self.focused_column -1);
+        self.focused_column = self.focused_column.saturating_sub(1);
+        self.focused_task = self.columns[self.focused_column].tasks.len() -1;
+    }
+
+    fn send_task_to_column(&mut self, task_index: usize, source_column_index: usize, target_column_index: usize) {
+        let task = self.columns[source_column_index].tasks[task_index].clone();
+        self.columns[source_column_index].tasks.remove(task_index);
+        self.columns[target_column_index].tasks.push(task);
     }
 
     fn left_space(&self, column_index: usize) -> usize {
