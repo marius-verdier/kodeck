@@ -5,7 +5,7 @@ use tui_input::Input;
 pub enum TaskPriority {
     HIGH,
     MEDIUM,
-    LOW
+    LOW,
 }
 
 impl TaskPriority {
@@ -27,6 +27,7 @@ impl TaskPriority {
     }
 }
 
+#[derive(Clone)]
 pub struct Task {
     pub title: String,
     pub description: String,
@@ -40,7 +41,7 @@ impl Task {
             title,
             description,
             priority,
-            order
+            order,
         }
     }
 }
