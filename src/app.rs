@@ -1,13 +1,12 @@
+use std::collections::HashMap;
 use color_eyre::eyre::Result;
 use crossterm::event;
-use crossterm::event::{KeyCode, KeyEventKind};
+use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::{DefaultTerminal, Frame};
 use ratatui::layout::{Constraint, HorizontalAlignment, Layout, Margin, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Text};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap};
-use ratatui_textarea::{Input, TextArea};
-use ratatui_textarea::Key::Delete;
+use ratatui::widgets::{Block, Borders, Clear, Padding, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap};
+use ratatui_textarea::{Input};
 use tui_input::backend::crossterm::EventHandler;
 
 use crate::models::column::{Column, CreateColumnPopup, DeleteColumnPopup};
@@ -19,6 +18,13 @@ enum InputMode {
     Normal,
     Editing,
     Visual,
+}
+
+enum VisualSelectionDirection {
+    LEFT,
+    RIGHT,
+    UP,
+    DOWN,
 }
 
 enum Popup {
@@ -45,22 +51,27 @@ pub struct App<'a> {
     scroll_x: usize,
     scroll_x_state: ScrollbarState,
     area_width: u16,
+    visual_selection_active: bool,
+    visual_selection_direction: Option<VisualSelectionDirection>,
     // COLUMNS MANAGEMENT
     columns: Vec<Column>,
     focused_column: usize,
     delete_focused_column: usize,
     create_column_popup: Option<CreateColumnPopup>,
     delete_column_popup: Option<DeleteColumnPopup>,
+    visual_selected_columns_indexes: Vec<usize>,
+    visual_anchor_column: usize,
     // TASKS MANAGEMENT
     focused_task: usize,
     creating_task_popup: Option<CreatingTaskPopup<'a>>,
     displaying_task_popup: Option<DisplayingTaskPopup>,
+    archived_tasks: Vec<Task>,
+    visual_selected_tasks_indexes: Vec<(usize, usize)>,
+    visual_anchor_task: usize,
 }
 
-// TODO : Safe delete of column
-// TODO : Delete task
-// TODO : Done on a task
-// TODO : move to specific column by selecting many or one and selecting visually target column
+// TODO : Done on a task => what's the point ? define a done column ? hide them ?
+// TODO : CLEAN BULK IN VISUAL AND ADD SUPPORT FOR SPACE IN NORMAL MODE
 impl App<'_> {
     pub(crate) fn new() -> Self {
         let mut columns = Vec::new();
@@ -83,13 +94,20 @@ impl App<'_> {
             scroll_x: 0,
             scroll_x_state: ScrollbarState::new(5),
             area_width: 0,
+            visual_selection_active: false,
+            visual_selection_direction: None,
             focused_column: 0,
             delete_focused_column: 0,
             focused_task: 0,
             create_column_popup: None,
             delete_column_popup: None,
+            visual_selected_columns_indexes: Vec::new(),
+            visual_anchor_column: 0,
             creating_task_popup: None,
             displaying_task_popup: None,
+            archived_tasks: Vec::new(),
+            visual_selected_tasks_indexes: Vec::new(),
+            visual_anchor_task: 0,
         }
     }
 
@@ -101,22 +119,46 @@ impl App<'_> {
                 match self.input_mode {
                     InputMode::Normal if self.displaying_task_popup.is_none() => match key.code {
                         KeyCode::Char('i') => self.input_mode = InputMode::Editing,
+                        KeyCode::Char('v') => {
+                            self.input_mode = InputMode::Visual;
+                            self.visual_selection_active = true;
+                            self.visual_anchor_column = self.focused_column;
+                            self.visual_anchor_task = self.focused_task;
+                            self.visual_selected_columns_indexes = vec![];
+                            self.visual_selected_tasks_indexes = vec![];
+                        },
                         KeyCode::Char('c') => {
+                            if !self.is_not_bulk(){
+                                continue;
+                            }
                             self.input_mode = InputMode::Editing;
                             self.toggle_column_creation_popup();
                         }
                         KeyCode::Char('t') => {
+                            if !self.is_not_bulk(){
+                                continue;
+                            }
                             self.input_mode = InputMode::Editing;
                             self.toggle_task_creation_popup();
                         }
                         KeyCode::Char('D') => {
+                            if !self.is_not_bulk(){
+                                continue;
+                            }
                             self.delete_focused_column = self.focused_column.clone();
                             self.open_popup(Popup::DeleteColumnPopup);
                         }
+                        //TODO : bulk move
                         KeyCode::Char('s') => {
+                            if !self.is_not_bulk(){
+                                continue;
+                            }
                             self.send_task_to_next();
                         }
                         KeyCode::Char('S') => {
+                            if !self.is_not_bulk(){
+                                continue;
+                            }
                             self.send_task_to_prev();
                         }
                         KeyCode::Up => {
@@ -143,12 +185,13 @@ impl App<'_> {
                                 continue
                             }
 
-                            column.tasks.remove(self.focused_task);
+                            let task = column.tasks.remove(self.focused_task);
                             if column.tasks.is_empty() {
                                 self.focused_task = 0;
                                 continue
                             }
-                            self.focused_task = self.focused_task.wrapping_sub(1) % column.tasks.len()
+                            self.focused_task = self.focused_task.wrapping_sub(1) % column.tasks.len();
+                            self.archived_tasks.push(task);
                         }
                         KeyCode::Tab => {
                             if let Some(popup) = &mut self.delete_column_popup {
@@ -168,7 +211,35 @@ impl App<'_> {
                             self.focused_task = 0;
                             self.scroll_to_focused_column();
                         }
+                        KeyCode::Char(' ') => {
+                            let key = (self.focused_column, self.focused_task);
+                            if self.visual_selected_tasks_indexes.contains(&key) {
+                                self.visual_selected_tasks_indexes.retain(|&k| k != key);
+                            } else {
+                                self.visual_selected_tasks_indexes.push(key);
+                                self.visual_selection_active = true;
+                            }
+                            if self.visual_selected_tasks_indexes.is_empty() {
+                                self.visual_selection_active = false;
+                            }
+                        }
                         KeyCode::Enter => {
+                            if !self.is_not_bulk(){
+                                let mut by_column: std::collections::HashMap<usize, Vec<usize>> = HashMap::new();
+                                for (col, task) in &self.visual_selected_tasks_indexes {
+                                    by_column.entry(*col).or_default().push(*task);
+                                }
+                                for (col_idx, mut task_indexes) in by_column {
+                                    task_indexes.sort();
+                                    for task_idx in task_indexes.iter().rev() {
+                                        let task = self.columns[col_idx].tasks.remove(*task_idx);
+                                        self.columns[self.focused_column].tasks.push(task);
+                                    }
+                                }
+                                self.visual_selected_tasks_indexes.clear();
+                                self.visual_selection_active = false;
+                                continue
+                            }
                             if let Some(popup) = &mut self.delete_column_popup {
                                 if popup.delete {
                                     self.delete_column(self.delete_focused_column);
@@ -176,6 +247,8 @@ impl App<'_> {
                                 self.close_popup(Popup::DeleteColumnPopup);
                                 continue
                             }
+                            self.toggle_task_displaying_popup(self.columns[self.focused_column].tasks[self.focused_task].clone());
+
                         }
                         KeyCode::Esc => {
                             if let Some(popup) = &mut self.delete_column_popup {
@@ -183,15 +256,16 @@ impl App<'_> {
                                 continue
                             }
                         }
-                        KeyCode::Char(' ') => {
-                            self.toggle_task_displaying_popup(self.columns[self.focused_column].tasks[self.focused_task].clone());
-                        }
                         KeyCode::Char('q') => return Ok(()),
                         _ => {},
                     }
                     InputMode::Normal => match key.code{
                         KeyCode::Esc => {
                             self.toggle_task_displaying_popup(self.columns[self.focused_column].tasks[self.focused_task].clone());
+                        }
+                        KeyCode::Char('d') => {
+                            self.columns[self.focused_column].tasks[self.focused_task].done = true;
+                            self.displaying_task_popup = None;
                         }
                         _ => {}
                     }
@@ -378,11 +452,120 @@ impl App<'_> {
                             }
                         }
                     }
+                    InputMode::Visual => match key.code {
+                        KeyCode::Esc => {
+                            self.visual_selection_active = false;
+                            self.visual_selected_tasks_indexes.clear();
+                            self.visual_selected_columns_indexes.clear();
+                            self.visual_selection_direction = None;
+                            self.visual_anchor_task = self.focused_task;
+                            self.visual_anchor_column = self.focused_column;
+                            self.input_mode = InputMode::Normal;
+                        }
+                        KeyCode::Left => {
+                            let is_selecting_tasks = !self.visual_selected_tasks_indexes.is_empty();
+                            if !is_selecting_tasks {
+                                if self.visual_selected_columns_indexes.is_empty() {
+                                    self.visual_selected_columns_indexes = vec![self.visual_anchor_column];
+                                    self.visual_selection_direction = Some(VisualSelectionDirection::LEFT);
+                                } else if self.visual_selected_columns_indexes.len() == 1 && matches!(self.visual_selection_direction, Some(VisualSelectionDirection::RIGHT)){
+                                    self.visual_selected_columns_indexes.clear();
+                                } else {
+                                    self.focused_column = self.focused_column.saturating_sub(1);
+                                    let start = self.visual_anchor_column.min(self.focused_column);
+                                    let end = self.visual_anchor_column.max(self.focused_column);
+                                    self.visual_selected_columns_indexes = (start..=end).collect();
+                                    self.visual_selected_tasks_indexes.clear();
+                                }
+                            }
+                        }
+                        KeyCode::Up => {
+                            let is_selecting_columns = !self.visual_selected_columns_indexes.is_empty();
+                            if !is_selecting_columns {
+                                if self.visual_selected_tasks_indexes.is_empty() {
+                                    self.visual_selected_tasks_indexes = vec![(self.visual_anchor_column, self.visual_anchor_task)];
+                                    self.visual_selection_direction = Some(VisualSelectionDirection::UP);
+                                } else if self.visual_selected_tasks_indexes.len() == 1 && matches!(self.visual_selection_direction, Some(VisualSelectionDirection::DOWN)) {
+                                    self.visual_selected_tasks_indexes.clear();
+                                } else {
+                                    self.focused_task = self.focused_task.saturating_sub(1);
+                                    let start = self.visual_anchor_task.min(self.focused_task);
+                                    let end = self.visual_anchor_task.max(self.focused_task);
+                                    self.visual_selected_tasks_indexes = (start..=end)
+                                        .map(|t| (self.focused_column, t))
+                                        .collect();
+                                    self.visual_selected_columns_indexes.clear();
+                                }
+                            }
+                        }
+                        KeyCode::Right => {
+                            let is_selecting_tasks = !self.visual_selected_tasks_indexes.is_empty();
+                            if !is_selecting_tasks {
+                                if self.visual_selected_columns_indexes.is_empty() {
+                                    self.visual_selected_columns_indexes = vec![self.visual_anchor_column];
+                                    self.visual_selection_direction = Some(VisualSelectionDirection::RIGHT);
+                                } else if self.visual_selected_columns_indexes.len() == 1 && matches!(self.visual_selection_direction, Some(VisualSelectionDirection::LEFT)) {
+                                    self.visual_selected_columns_indexes.clear();
+                                } else {
+                                    self.focused_column = self.focused_column.saturating_add(1).min(self.columns.len() - 1);
+                                    let start = self.visual_anchor_column.min(self.focused_column);
+                                    let end = self.visual_anchor_column.max(self.focused_column);
+                                    self.visual_selected_columns_indexes = (start..=end).collect();
+                                    self.visual_selected_tasks_indexes.clear();
+                                }
+                            }
+                        }
+                        KeyCode::Down => {
+                            let is_selecting_columns = !self.visual_selected_columns_indexes.is_empty();
+                            if !is_selecting_columns {
+                                if self.visual_selected_tasks_indexes.is_empty() {
+                                    self.visual_selected_tasks_indexes = vec![(self.visual_anchor_column, self.visual_anchor_task)];
+                                    self.visual_selection_direction = Some(VisualSelectionDirection::DOWN);
+                                } else if self.visual_selected_tasks_indexes.len() == 1 && matches!(self.visual_selection_direction, Some(VisualSelectionDirection::UP)) {
+                                    self.visual_selected_tasks_indexes.clear();
+                                } else {
+                                    self.focused_task = self.focused_task.saturating_add(1).min(self.columns[self.focused_column].tasks.len());
+                                    let start = self.visual_anchor_task.min(self.focused_task);
+                                    let end = self.visual_anchor_task.max(self.focused_task);
+                                    self.visual_selected_tasks_indexes = (start..=end)
+                                        .map(|t| (self.focused_column, t))
+                                        .collect();
+                                    self.visual_selected_columns_indexes.clear();
+                                }
+                            }
+                        }
+                        // KeyCode::Tab => {
+                        //     self.focused_column = (self.focused_column + 1).min(self.columns.len() - 1);
+                        //     self.visual_anchor_task = self.focused_task;
+                        //     self.focused_task = 0;
+                        // }
+                        // KeyCode::BackTab => {
+                        //     self.focused_column = self.focused_column.saturating_sub(1);
+                        //     self.visual_anchor_task = self.focused_task;
+                        //     self.focused_task = 0;
+                        // }
+                        KeyCode::Char('s') if key.modifiers == KeyModifiers::CONTROL => {
+                            let is_selecting_tasks = self.visual_selected_tasks_indexes.len() >= 1 && self.visual_selected_columns_indexes.is_empty();
+                            if is_selecting_tasks {
+                                self.input_mode = InputMode::Normal;
+                            }
+                            println!("{:?}", self.visual_selected_tasks_indexes);
+                        }
+                        _ => {}
+                    }
                     _ => {}
                 }
             }
         }
         Ok(())
+    }
+
+    fn reset_visual_selection(&mut self) {
+        self.visual_selected_columns_indexes.clear();
+        self.visual_selected_columns_indexes.push(self.focused_column);
+
+        self.visual_selected_tasks_indexes.clear();
+        self.visual_selected_tasks_indexes.push((self.focused_column,self.focused_task));
     }
 
     fn open_popup(&mut self, popup: Popup) {
@@ -418,6 +601,11 @@ impl App<'_> {
         self.input_mode = InputMode::Normal;
         self.creating_task_popup = None;
         false
+    }
+
+    fn is_not_bulk(&self) -> bool {
+        !self.visual_selection_active
+            && !matches!(self.input_mode, InputMode::Visual)
     }
 
     fn print_mode(&self) -> String {
@@ -486,12 +674,21 @@ impl App<'_> {
             };
 
             let ongoing_column = &self.columns[i];
-
-            let block = if i == self.focused_column {
-                Block::bordered().title(ongoing_column.name.clone()).border_style(Style::new().bold())
-            } else {
-                Block::bordered().title(ongoing_column.name.clone())
-            };
+            let is_visual_col = self.visual_selected_columns_indexes.contains(&i);
+            let block = Block::bordered()
+                .title(ongoing_column.name.clone())
+                .border_style(if i == self.focused_column {
+                    Style::new().bold().fg(if is_visual_col { Color::Cyan } else { Color::White })
+                } else if is_visual_col {
+                    Style::new().fg(Color::Cyan)
+                } else {
+                    Style::default()
+                })
+                .style(if is_visual_col {
+                    Style::new().bg(Color::DarkGray)
+                } else {
+                    Style::default()
+                });
 
             let inner = block.inner(column);
             frame.render_widget(block, column);
@@ -509,8 +706,25 @@ impl App<'_> {
                         TaskPriority::MEDIUM => Color::Yellow,
                         TaskPriority::HIGH => Color::Red,
                     };
+
+                    let is_visual_task = self.visual_selected_tasks_indexes.contains(&(i, j));
                     let task_block = Block::bordered()
-                        .border_style(if self.focused_task == j && i == self.focused_column {Style::new().bold()} else {Style::default().fg(priority_color)});
+                        .border_style(
+                            if self.focused_task == j && i == self.focused_column {
+                                Style::new().bold()
+                            } else if is_visual_task {
+                                Style::new().fg(Color::Cyan)
+                            } else {
+                                Style::default().fg(priority_color)
+                            }
+                        )
+                        .style(
+                            if is_visual_task {
+                                Style::new().bg(Color::DarkGray)
+                            } else {
+                                Style::default()
+                            }
+                        );
                     let task_inner = task_block.inner(task_areas[j]);
                     frame.render_widget(task_block, task_areas[j]);
                     frame.render_widget(Paragraph::new(task.title.as_str()), task_inner);
@@ -645,10 +859,12 @@ impl App<'_> {
         if let Some(popup) = &self.displaying_task_popup {
             let popup_block = Block::default()
                 .borders(Borders::ALL)
+                .title_bottom(" Press d to mark task as done ")
+                .title_alignment(HorizontalAlignment::Right)
                 .style(Style::default().bg(Color::DarkGray));
 
             let description_lines = popup.task.description.clone().lines().count();
-            let popup_height = 3 + description_lines.max(1) + 2;
+            let popup_height = 3 + description_lines.max(1) + 3;
 
             let popup_area = area.centered(Constraint::Percentage(30), Constraint::Length(popup_height as u16));
             let inner_area = popup_block.inner(popup_area);
