@@ -18,12 +18,22 @@ impl Column {
     }
 }
 
-pub struct CreatingColumnPopup {
+pub struct CreateColumnPopup {
     pub input: Input,
 }
 
-impl CreatingColumnPopup {
-    pub fn new() -> CreatingColumnPopup {
-        CreatingColumnPopup { input: Input::default() }
+impl CreateColumnPopup {
+    pub fn new() -> Self {
+        Self { input: Input::default() }
+    }
+}
+
+pub struct DeleteColumnPopup {
+    pub delete: bool,
+}
+
+impl DeleteColumnPopup {
+    pub fn new() -> Self {
+        Self { delete: false }
     }
 }

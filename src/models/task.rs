@@ -11,17 +11,17 @@ pub enum TaskPriority {
 impl TaskPriority {
     pub fn value(&self) -> String {
         match self {
-            TaskPriority::HIGH => String::from("high"),
-            TaskPriority::MEDIUM => String::from("medium"),
-            TaskPriority::LOW => String::from("low")
+            TaskPriority::HIGH => String::from("HIGH"),
+            TaskPriority::MEDIUM => String::from("MEDIUM"),
+            TaskPriority::LOW => String::from("LOW")
         }
     }
-
+    
     pub fn from_value(value: &str) -> Option<TaskPriority> {
         match value {
-            "high" => Some(TaskPriority::HIGH),
-            "medium" => Some(TaskPriority::MEDIUM),
-            "low" => Some(TaskPriority::LOW),
+            "HIGH" => Some(TaskPriority::HIGH),
+            "MEDIUM" => Some(TaskPriority::MEDIUM),
+            "LOW" => Some(TaskPriority::LOW),
             _ => None
         }
     }
@@ -58,6 +58,18 @@ impl<'a> CreatingTaskPopup<'a> {
             title: Input::default(),
             description: TextArea::default(),
             priority: TaskPriority::LOW,
+        }
+    }
+}
+
+pub struct DisplayingTaskPopup {
+    pub task: Task,
+}
+
+impl DisplayingTaskPopup {
+    pub fn new(task: Task) -> DisplayingTaskPopup {
+        DisplayingTaskPopup {
+            task,
         }
     }
 }
