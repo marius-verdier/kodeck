@@ -2,14 +2,16 @@ use color_eyre::eyre::Result;
 use crossterm::event;
 use crossterm::event::{KeyCode, KeyEventKind};
 use ratatui::{DefaultTerminal, Frame};
-use ratatui::layout::{Constraint, Layout, Margin, Position, Rect};
-use ratatui::style::{Color, Style};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
+use ratatui::layout::{Constraint, HorizontalAlignment, Layout, Margin, Position, Rect};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Text};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap};
 use ratatui_textarea::{Input, TextArea};
+use ratatui_textarea::Key::Delete;
 use tui_input::backend::crossterm::EventHandler;
 
-use crate::models::column::{Column, CreatingColumnPopup};
-use crate::models::task::{CreatingTaskPopup, Task, TaskPriority};
+use crate::models::column::{Column, CreateColumnPopup, DeleteColumnPopup};
+use crate::models::task::{CreatingTaskPopup, DisplayingTaskPopup, Task, TaskPriority};
 
 const SCROLL_SIZE: usize = 5;
 const COLUMNS_GAP: u16 = 4;
@@ -19,8 +21,19 @@ enum InputMode {
     Visual,
 }
 
+enum Popup {
+    // COLUMN RELATED POPUP
+    CreateColumnPopup,
+    DeleteColumnPopup,
+    // TASK RELATED POPUP
+    CreateTaskPopup,
+    ShowTaskPopup,
+}
+
 enum InputType {
+    // COLUMN RELATED INPUTS
     CreatingColumn,
+    // TASK RELATED INPUTS
     CreatingTaskTitle,
     CreatingTaskDescription,
     CreatingTaskPriority,
@@ -28,17 +41,26 @@ enum InputType {
 
 pub struct App<'a> {
     input_mode: InputMode,
-    columns: Vec<Column>,
+    active_input: Option<InputType>,
     scroll_x: usize,
     scroll_x_state: ScrollbarState,
-    focused_column: usize,
-    focused_task: usize,
     area_width: u16,
-    creating_column_popup: Option<CreatingColumnPopup>,
+    // COLUMNS MANAGEMENT
+    columns: Vec<Column>,
+    focused_column: usize,
+    delete_focused_column: usize,
+    create_column_popup: Option<CreateColumnPopup>,
+    delete_column_popup: Option<DeleteColumnPopup>,
+    // TASKS MANAGEMENT
+    focused_task: usize,
     creating_task_popup: Option<CreatingTaskPopup<'a>>,
-    active_input: Option<InputType>,
+    displaying_task_popup: Option<DisplayingTaskPopup>,
 }
-// TODO : IMPROVE UI
+
+// TODO : Safe delete of column
+// TODO : Delete task
+// TODO : Done on a task
+// TODO : move to specific column by selecting many or one and selecting visually target column
 impl App<'_> {
     pub(crate) fn new() -> Self {
         let mut columns = Vec::new();
@@ -56,15 +78,18 @@ impl App<'_> {
 
         Self {
             input_mode: InputMode::Normal,
+            active_input: None,
             columns,
             scroll_x: 0,
             scroll_x_state: ScrollbarState::new(5),
             area_width: 0,
             focused_column: 0,
+            delete_focused_column: 0,
             focused_task: 0,
-            creating_column_popup: None,
+            create_column_popup: None,
+            delete_column_popup: None,
             creating_task_popup: None,
-            active_input: None,
+            displaying_task_popup: None,
         }
     }
 
@@ -74,7 +99,7 @@ impl App<'_> {
 
             if let Some(key) = event::read()?.as_key_press_event() {
                 match self.input_mode {
-                    InputMode::Normal => match key.code {
+                    InputMode::Normal if self.displaying_task_popup.is_none() => match key.code {
                         KeyCode::Char('i') => self.input_mode = InputMode::Editing,
                         KeyCode::Char('c') => {
                             self.input_mode = InputMode::Editing;
@@ -84,8 +109,9 @@ impl App<'_> {
                             self.input_mode = InputMode::Editing;
                             self.toggle_task_creation_popup();
                         }
-                        KeyCode::Char('d') => {
-                            self.delete_column(self.focused_column)
+                        KeyCode::Char('D') => {
+                            self.delete_focused_column = self.focused_column.clone();
+                            self.open_popup(Popup::DeleteColumnPopup);
                         }
                         KeyCode::Char('s') => {
                             self.send_task_to_next();
@@ -93,12 +119,6 @@ impl App<'_> {
                         KeyCode::Char('S') => {
                             self.send_task_to_prev();
                         }
-                        // KeyCode::Left => {
-                        //     self.scroll_left()
-                        // }
-                        // KeyCode::Right => {
-                        //     self.scroll_right()
-                        // }
                         KeyCode::Up => {
                             let column = &self.columns[self.focused_column];
                             if column.tasks.is_empty() {
@@ -113,16 +133,67 @@ impl App<'_> {
                             }
                             self.focused_task = self.focused_task.wrapping_add(1) % column.tasks.len();
                         }
+                        KeyCode::Backspace => {
+                            let column = &mut self.columns[self.focused_column];
+                            if column.tasks.is_empty() {
+                                continue
+                            }
+
+                            if self.focused_task >= column.tasks.len() {
+                                continue
+                            }
+
+                            column.tasks.remove(self.focused_task);
+                            if column.tasks.is_empty() {
+                                self.focused_task = 0;
+                                continue
+                            }
+                            self.focused_task = self.focused_task.wrapping_sub(1) % column.tasks.len()
+                        }
                         KeyCode::Tab => {
+                            if let Some(popup) = &mut self.delete_column_popup {
+                                popup.delete = !popup.delete;
+                                continue
+                            }
                             self.focused_column = self.focused_column.saturating_add(1) % self.columns.len();
+                            self.focused_task = 0;
                             self.scroll_to_focused_column();
                         }
                         KeyCode::BackTab => {
+                            if let Some(popup) = &mut self.delete_column_popup {
+                                popup.delete = !popup.delete;
+                                continue
+                            }
                             self.focused_column = self.focused_column.checked_sub(1).unwrap_or(self.columns.len() - 1);
+                            self.focused_task = 0;
                             self.scroll_to_focused_column();
+                        }
+                        KeyCode::Enter => {
+                            if let Some(popup) = &mut self.delete_column_popup {
+                                if popup.delete {
+                                    self.delete_column(self.delete_focused_column);
+                                }
+                                self.close_popup(Popup::DeleteColumnPopup);
+                                continue
+                            }
+                        }
+                        KeyCode::Esc => {
+                            if let Some(popup) = &mut self.delete_column_popup {
+                                self.close_popup(Popup::DeleteColumnPopup);
+                                continue
+                            }
+                        }
+                        KeyCode::Char(' ') => {
+                            self.toggle_task_displaying_popup(self.columns[self.focused_column].tasks[self.focused_task].clone());
                         }
                         KeyCode::Char('q') => return Ok(()),
                         _ => {},
+                    }
+                    InputMode::Normal => match key.code{
+                        KeyCode::Esc => {
+                            self.toggle_task_displaying_popup(self.columns[self.focused_column].tasks[self.focused_task].clone());
+                        }
+                        _ => {}
                     }
                     InputMode::Editing if key.kind == KeyEventKind::Press => match key.code {
                         KeyCode::Esc => {
@@ -142,7 +213,7 @@ impl App<'_> {
                             let event = crossterm::event::Event::Key(key);
                             match &mut self.active_input {
                                 Some(InputType::CreatingColumn) => {
-                                    if let Some(popup) = &mut self.creating_column_popup {
+                                    if let Some(popup) = &mut self.create_column_popup {
                                         popup.input.handle_event(&event);
                                     }
                                 }
@@ -164,7 +235,7 @@ impl App<'_> {
                             let event = event::Event::Key(key);
                             match &mut self.active_input {
                                 Some(InputType::CreatingColumn) => {
-                                    if let Some(popup) = &mut self.creating_column_popup {
+                                    if let Some(popup) = &mut self.create_column_popup {
                                         popup.input.handle_event(&event);
                                     }
                                 }
@@ -185,10 +256,10 @@ impl App<'_> {
                         KeyCode::Enter => {
                             match self.active_input {
                                 Some(InputType::CreatingColumn) => {
-                                    if let Some(popup) = &self.creating_column_popup {
+                                    if let Some(popup) = &self.create_column_popup {
                                         self.columns.push(Column::new(popup.input.value().to_string(), 50));
                                     }
-                                    self.creating_column_popup = None;
+                                    self.create_column_popup = None;
                                     self.active_input = None;
                                     self.input_mode = InputMode::Normal;
                                 }
@@ -244,7 +315,7 @@ impl App<'_> {
                                     let event = crossterm::event::Event::Key(key);
                                     match &mut self.active_input {
                                         Some(InputType::CreatingColumn) => {
-                                            if let Some(popup) = &mut self.creating_column_popup { popup.input.handle_event(&event); }
+                                            if let Some(popup) = &mut self.create_column_popup { popup.input.handle_event(&event); }
                                         }
                                         Some(InputType::CreatingTaskTitle) => {
                                             if let Some(popup) = &mut self.creating_task_popup { popup.title.handle_event(&event); }
@@ -274,7 +345,7 @@ impl App<'_> {
                                     let event = crossterm::event::Event::Key(key);
                                     match &mut self.active_input {
                                         Some(InputType::CreatingColumn) => {
-                                            if let Some(popup) = &mut self.creating_column_popup { popup.input.handle_event(&event); }
+                                            if let Some(popup) = &mut self.create_column_popup { popup.input.handle_event(&event); }
                                         }
                                         Some(InputType::CreatingTaskTitle) => {
                                             if let Some(popup) = &mut self.creating_task_popup { popup.title.handle_event(&event); }
@@ -312,6 +383,20 @@ impl App<'_> {
             }
         }
         Ok(())
+    }
+
+    fn open_popup(&mut self, popup: Popup) {
+        match popup {
+            Popup::DeleteColumnPopup => self.delete_column_popup = Some(DeleteColumnPopup::new()),
+            _ => {}
+        }
+    }
+
+    fn close_popup(&mut self, popup: Popup) {
+        match popup {
+            Popup::DeleteColumnPopup => self.delete_column_popup = None,
+            _ => {}
+        }
     }
 
     fn safe_create_task(&mut self) -> bool {
@@ -445,13 +530,78 @@ impl App<'_> {
         self.render_column_creation_popup(frame, area);
 
         self.render_task_creation_popup(frame, area);
+
+        self.show_task_popup(frame, area);
+
+        self.render_delete_column_popup(frame, area);
+    }
+
+    fn render_delete_column_popup(&mut self, frame: &mut Frame, area: Rect) {
+        if let Some(popup) = &self.delete_column_popup {
+            let block = Block::default()
+                .title("Are you sure you want to delete columns?")
+                .borders(Borders::ALL)
+                .style(Style::default().bg(Color::DarkGray));
+
+            let popup_area = area.centered(Constraint::Percentage(30), Constraint::Length(5));
+            let inner_area = block.inner(popup_area);
+
+            frame.render_widget(Clear, popup_area);
+            frame.render_widget(block, popup_area);
+
+            let layout = Layout::vertical([
+                Constraint::Fill(1),
+                Constraint::Length(3),
+                Constraint::Fill(1),
+            ]);
+            let [_, buttons_row, _] = inner_area.layout(&layout);
+
+            let button_layout = Layout::horizontal([
+                Constraint::Fill(1),
+                Constraint::Length(15),
+                Constraint::Length(10),
+                Constraint::Length(15),
+                Constraint::Fill(1),
+            ]);
+            let [_, ok_button, _, cancel_button, _] = buttons_row.layout(&button_layout);
+
+            let ok_block = Block::default()
+                .borders(Borders::ALL)
+                .style(Style::default());
+
+            let cancel_block = Block::default()
+                .borders(Borders::ALL)
+                .style(Style::default());
+
+            let ok_text_style = if popup.delete {
+                Style::default().add_modifier(Modifier::REVERSED)
+            } else {
+                Style::default()
+            };
+
+            let cancel_text_style = if !popup.delete {
+                Style::default().add_modifier(Modifier::REVERSED)
+            } else {
+                Style::default()
+            };
+            let inner_ok = ok_block.inner(ok_button);
+            let inner_cancel = cancel_block.inner(cancel_button);
+
+            frame.render_widget(ok_block, ok_button);
+            frame.render_widget(cancel_block, cancel_button);
+
+
+            frame.render_widget(Paragraph::new("Ok").centered().style(ok_text_style), inner_ok);
+            frame.render_widget(Paragraph::new("Cancel").centered().style(cancel_text_style), inner_cancel);
+
+        }
     }
 
     fn render_input(&self, frame: &mut Frame, area: Rect) {
         let width = area.width.max(3) - 3;
         let source_input = match &self.active_input {
             Some(InputType::CreatingColumn) => {
-                self.creating_column_popup.as_ref().map(|p| &p.input)
+                self.create_column_popup.as_ref().map(|p| &p.input)
             }
             Some(InputType::CreatingTaskTitle) => {
                 self.creating_task_popup.as_ref().map(|p| &p.title)
@@ -475,7 +625,7 @@ impl App<'_> {
     }
 
     fn render_column_creation_popup(&mut self, frame: &mut Frame, area: Rect) {
-        if let Some(popup) = &self.creating_column_popup {
+        if let Some(popup) = &self.create_column_popup {
             let popup_block = Block::default()
                 .title("Creating a new column")
                 .borders(Borders::ALL)
@@ -491,6 +641,56 @@ impl App<'_> {
         }
     }
 
+    fn show_task_popup(&mut self, frame: &mut Frame, area: Rect) {
+        if let Some(popup) = &self.displaying_task_popup {
+            let popup_block = Block::default()
+                .borders(Borders::ALL)
+                .style(Style::default().bg(Color::DarkGray));
+
+            let description_lines = popup.task.description.clone().lines().count();
+            let popup_height = 3 + description_lines.max(1) + 2;
+
+            let popup_area = area.centered(Constraint::Percentage(30), Constraint::Length(popup_height as u16));
+            let inner_area = popup_block.inner(popup_area);
+
+            frame.render_widget(Clear, popup_area);
+
+            let layout = Layout::vertical([
+                Constraint::Length(4),
+                Constraint::Length(popup_height as u16),
+            ]);
+            let [top_area, description_area] = inner_area.layout(&layout);
+            frame.render_widget(popup_block, popup_area);
+
+            let [title_area, priority_area] = top_area.layout(&Layout::horizontal([
+                Constraint::Percentage(70),
+                Constraint::Percentage(30)
+            ]));
+
+            let title_block = Block::default().borders(Borders::NONE);
+            let inner_title_area = title_block.inner(title_area);
+            frame.render_widget(title_block, title_area);
+            frame.render_widget(Paragraph::new(popup.task.title.clone()), inner_title_area);
+
+            let mut priority_block = Block::default().borders(Borders::NONE);
+            let inner_priority_area = priority_block.inner(priority_area);
+            let priority_style = match popup.task.priority {
+                TaskPriority::LOW => Style::default().fg(Color::Blue),
+                TaskPriority::MEDIUM => Style::default().fg(Color::Yellow),
+                TaskPriority::HIGH => Style::default().fg(Color::Red),
+            };
+
+            priority_block = priority_block.border_style(priority_style);
+            frame.render_widget(priority_block, priority_area);
+            frame.render_widget(Paragraph::new(popup.task.priority.value()).alignment(HorizontalAlignment::Right).style(priority_style), inner_priority_area);
+
+            let description_block = Block::default().borders(Borders::NONE);
+            let inner_description_area = description_block.inner(description_area);
+            frame.render_widget(description_block, description_area);
+            frame.render_widget(Paragraph::new(popup.task.description.clone()).wrap(Wrap::default()), inner_description_area);
+        }
+    }
+
     fn render_task_creation_popup(&mut self, frame: &mut Frame, area: Rect) {
         if let Some(t_popup) = &mut self.creating_task_popup {
             let popup_block = Block::default()
@@ -498,7 +698,7 @@ impl App<'_> {
                 .borders(Borders::ALL)
                 .style(Style::default().bg(Color::DarkGray));
 
-            let area = area.centered(Constraint::Percentage(60), Constraint::Min(11));
+            let area = area.centered(Constraint::Percentage(60), Constraint::Min(9));
             let inner_area = popup_block.inner(area);
 
             let layout = Layout::vertical([
@@ -583,14 +783,25 @@ impl App<'_> {
         }
     }
     fn toggle_column_creation_popup(&mut self) {
-        match self.creating_column_popup {
+        match self.create_column_popup {
             Some(_) => {
-                self.creating_column_popup = None;
+                self.create_column_popup = None;
                 self.active_input = None;
             }
             None => {
-                self.creating_column_popup = Some(CreatingColumnPopup::new());
+                self.create_column_popup = Some(CreateColumnPopup::new());
                 self.active_input = Some(InputType::CreatingColumn);
+            }
+        }
+    }
+
+    fn toggle_task_displaying_popup(&mut self, task: Task) {
+        match self.displaying_task_popup {
+            Some(_) => {
+                self.displaying_task_popup = None;
+            }
+            None => {
+                self.displaying_task_popup = Some(DisplayingTaskPopup::new(task));
             }
         }
     }
