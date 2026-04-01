@@ -2,6 +2,7 @@ use ratatui_textarea::TextArea;
 use tui_input::Input;
 
 #[derive(Clone, Copy)]
+#[derive(Debug)]
 pub enum TaskPriority {
     HIGH,
     MEDIUM,
@@ -27,12 +28,13 @@ impl TaskPriority {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Task {
     pub title: String,
     pub description: String,
     pub priority: TaskPriority,
     pub order: usize,
+    pub done: bool,
 }
 
 impl Task {
@@ -42,8 +44,10 @@ impl Task {
             description,
             priority,
             order,
+            done: false,
         }
     }
+
 }
 
 pub struct CreatingTaskPopup<'a> {
