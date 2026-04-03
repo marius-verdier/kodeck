@@ -64,6 +64,14 @@ impl<'a> CreatingTaskPopup<'a> {
             priority: TaskPriority::LOW,
         }
     }
+
+    pub fn from(task: Task) -> CreatingTaskPopup<'a> {
+        CreatingTaskPopup {
+            title: Input::from(task.title),
+            description: TextArea::from(task.description.split("\n")),
+            priority: task.priority,
+        }
+    }
 }
 
 pub struct DisplayingTaskPopup {
