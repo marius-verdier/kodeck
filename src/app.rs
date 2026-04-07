@@ -20,6 +20,7 @@ enum InputType {
     CreatingColumn,
 }
 
+// TODO : BLABLABLA
 pub struct App {
     input_mode: InputMode,
     columns: Vec<Column>,
@@ -32,6 +33,8 @@ pub struct App {
     active_input: Option<InputType>
 }
 
+// TODO : Testing
+//FIXME : Oula
 impl App {
     pub(crate) fn new() -> Self {
         let mut columns = Vec::new();
