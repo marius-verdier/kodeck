@@ -674,9 +674,11 @@ dependencies = [
  "ignore",
  "log",
  "ratatui",
+ "ratatui-textarea",
  "rayon",
  "regex",
  "simple_logger",
+ "tui-input",
  "walkdir",
 ]
 
@@ -1150,6 +1152,18 @@ checksum = "0f76fe0bd0ed4295f0321b1676732e2454024c15a35d01904ddb315afd3d545c"
 dependencies = [
  "ratatui-core",
  "termwiz",
+]
+
+[[package]]
+name = "ratatui-textarea"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "de236b7cc74b3f7dea227b3fbad97bf459cddf552b6503d888fb9a106eda59ab"
+dependencies = [
+ "ratatui-core",
+ "ratatui-crossterm",
+ "ratatui-widgets",
+ "unicode-width",
 ]
 
 [[package]]
@@ -1647,6 +1661,16 @@ dependencies = [
  "sharded-slab",
  "thread_local",
  "tracing-core",
+]
+
+[[package]]
+name = "tui-input"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "79c1ee964298f136020f5f69e0e601f4d3a1f610a7baf1af9fcb96152e8a2c45"
+dependencies = [
+ "ratatui",
+ "unicode-width",
 ]
 
 [[package]]
