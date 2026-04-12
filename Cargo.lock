@@ -680,6 +680,8 @@ dependencies = [
  "simple_logger",
  "tui-input",
  "walkdir",
+ "simple_logger",
+ "tui-input",
 ]
 
 [[package]]
