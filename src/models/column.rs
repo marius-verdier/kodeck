@@ -1,29 +1,39 @@
+use tui_input::Input;
+use crate::models::task::Task;
+
+
 pub struct Column {
     pub name: String,
     pub width: usize,
+    pub tasks: Vec<Task>,
 }
 
 impl Column {
     pub fn new(name: String, width: usize) -> Column {
-        Column { name, width }
-    }
-
-    pub fn factory(quantity: usize) -> Vec<Self> {
-        let mut result: Vec<Self> = Vec::new();
-        for i in 0..quantity {
-            result.push(Self::new(format!("Column{}", i), 35));
+        Column {
+            name,
+            width,
+            tasks: Vec::new()
         }
-
-        result
     }
 }
 
-pub struct CreatingColumnPopup {
-    pub input: String,
+pub struct CreateColumnPopup {
+    pub input: Input,
 }
 
-impl CreatingColumnPopup {
-    pub fn new() -> CreatingColumnPopup {
-        CreatingColumnPopup { input: String::new() }
+impl CreateColumnPopup {
+    pub fn new() -> Self {
+        Self { input: Input::default() }
+    }
+}
+
+pub struct DeleteColumnPopup {
+    pub delete: bool,
+}
+
+impl DeleteColumnPopup {
+    pub fn new() -> Self {
+        Self { delete: false }
     }
 }
