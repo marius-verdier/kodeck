@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "id": "9556f28e-9401-4282-9711-47dfd522c569",
+  "name": "kodec",
+  "repositories": [
+    {
+      "id": "kodeck",
+      "path": "."
+    }
+  ],
+  "columns": [
+    {
+      "id": "inbox",
+      "name": "Inbox"
+    },
+    {
+      "id": "todo",
+      "name": "To do"
+    },
+    {
+      "id": "in-progress",
+      "name": "In progress"
+    },
+    {
+      "id": "review",
+      "name": "Review"
+    },
+    {
+      "id": "done",
+      "name": "Done"
+    }
+  ],
+  "providers": [],
+  "status_mappings": []
+}
