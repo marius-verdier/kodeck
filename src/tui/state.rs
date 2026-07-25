@@ -1,7 +1,55 @@
 use ratatui_textarea::TextArea;
 use tui_input::Input;
 
-use crate::domain::{CardId, Task, TaskPriority};
+use crate::domain::{CardId, ColumnId, Task, TaskPriority};
+
+pub(super) struct ArchivedTask {
+    pub column_id: ColumnId,
+    pub task: Task,
+}
+
+#[derive(Debug, Clone)]
+pub(super) enum Confirmation {
+    Archive { card_ids: Vec<CardId> },
+    DeleteColumn { column_index: usize },
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct ConfirmationState {
+    pub action: Confirmation,
+    pub confirm_selected: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct MovePickerState {
+    pub selected_column: usize,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct GotoTarget {
+    pub label: String,
+    pub card_id: CardId,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct GotoLabelsState {
+    pub targets: Vec<GotoTarget>,
+    pub input: String,
+}
+
+pub(super) struct ColumnFormState {
+    pub input: Input,
+    pub error: Option<String>,
+}
+
+impl ColumnFormState {
+    pub fn new() -> Self {
+        Self {
+            input: Input::default(),
+            error: None,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum InputMode {

@@ -1,7 +1,6 @@
 mod app;
 mod bootstrap;
 mod keymap;
-mod popups;
 mod state;
 mod ui;
 
