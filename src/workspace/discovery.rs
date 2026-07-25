@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use crate::domain::{KnownWorkspace, WorkspaceId};
 use crate::storage::AppPaths;
 
+use super::repositories::enclosing_git_root;
 use super::{
     PrivateWorkspaceStore, RepositoryAvailability, SharedWorkspaceStore, WorkspaceContext,
     WorkspaceError, WorkspaceRegistry, inspect_repositories, suggested_workspace_root,
@@ -12,8 +13,13 @@ use super::{
 #[derive(Debug, Clone)]
 pub enum DiscoveryOutcome {
     Found(Box<WorkspaceContext>),
-    SelectionRequired(Vec<KnownWorkspace>),
-    NotFound { suggested_root: PathBuf },
+    SelectionRequired {
+        workspaces: Vec<KnownWorkspace>,
+        suggested_root: PathBuf,
+    },
+    NotFound {
+        suggested_root: PathBuf,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -39,31 +45,34 @@ impl WorkspaceManager {
             }
         }
 
+        if let Some(suggested_root) = enclosing_git_root(&start)? {
+            return Ok(DiscoveryOutcome::NotFound { suggested_root });
+        }
+
         let global_config = self.registry.load()?;
-        let available: Vec<_> = global_config
+        let mut available: Vec<_> = global_config
             .known_workspaces
             .into_iter()
             .filter(|workspace| AppPaths::shared_workspace_file(&workspace.path).is_file())
             .collect();
 
         if let Some(last_id) = global_config.last_workspace_id
-            && let Some(last) = available.iter().find(|workspace| workspace.id == last_id)
+            && let Some(last_index) = available
+                .iter()
+                .position(|workspace| workspace.id == last_id)
         {
-            return self
-                .open_root(&last.path)
-                .map(Box::new)
-                .map(DiscoveryOutcome::Found);
+            let last = available.remove(last_index);
+            available.insert(0, last);
         }
 
-        match available.as_slice() {
-            [] => Ok(DiscoveryOutcome::NotFound {
-                suggested_root: suggested_workspace_root(&start)?,
-            }),
-            [workspace] => self
-                .open_root(&workspace.path)
-                .map(Box::new)
-                .map(DiscoveryOutcome::Found),
-            _ => Ok(DiscoveryOutcome::SelectionRequired(available)),
+        let suggested_root = suggested_workspace_root(&start)?;
+        if available.is_empty() {
+            Ok(DiscoveryOutcome::NotFound { suggested_root })
+        } else {
+            Ok(DiscoveryOutcome::SelectionRequired {
+                workspaces: available,
+                suggested_root,
+            })
         }
     }
 

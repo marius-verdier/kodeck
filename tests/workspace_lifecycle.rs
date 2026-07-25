@@ -247,3 +247,97 @@ fn suggests_the_enclosing_git_root_for_initialization() {
         fs::canonicalize(root).unwrap()
     );
 }
+
+#[test]
+fn uninitialized_git_repository_is_suggested_even_when_another_workspace_was_last_used() {
+    let temporary = TestDirectory::new();
+    let known_root = temporary.0.join("known");
+    let current_root = temporary.0.join("current");
+    let current_child = current_root.join("src");
+    create_directory(&known_root);
+    create_directory(current_root.join(".git"));
+    create_directory(&current_child);
+    let paths = temporary.app_paths();
+    WorkspaceInitializer::new(paths.clone())
+        .initialize(&known_root, "Known")
+        .unwrap();
+
+    let outcome = WorkspaceManager::new(paths)
+        .discover(&current_child)
+        .unwrap();
+
+    let DiscoveryOutcome::NotFound { suggested_root } = outcome else {
+        panic!("the current repository should be proposed for initialization");
+    };
+    assert_eq!(suggested_root, fs::canonicalize(current_root).unwrap());
+}
+
+#[test]
+fn outside_a_repository_discovery_offers_local_creation_and_known_workspaces() {
+    let temporary = TestDirectory::new();
+    let first_root = temporary.0.join("first");
+    let last_root = temporary.0.join("last");
+    let launch_root = temporary.0.join("launch");
+    create_directory(&first_root);
+    create_directory(&last_root);
+    create_directory(&launch_root);
+    let paths = temporary.app_paths();
+    let first = WorkspaceInitializer::new(paths.clone())
+        .initialize(&first_root, "First")
+        .unwrap();
+    let last = WorkspaceInitializer::new(paths.clone())
+        .initialize(&last_root, "Last")
+        .unwrap();
+
+    let outcome = WorkspaceManager::new(paths).discover(&launch_root).unwrap();
+
+    let DiscoveryOutcome::SelectionRequired {
+        workspaces,
+        suggested_root,
+    } = outcome
+    else {
+        panic!("creation and known workspaces should be offered");
+    };
+    assert_eq!(suggested_root, fs::canonicalize(launch_root).unwrap());
+    assert_eq!(
+        workspaces
+            .iter()
+            .map(|workspace| workspace.id)
+            .collect::<Vec<_>>(),
+        vec![last.config.id, first.config.id]
+    );
+}
+
+#[test]
+fn outside_a_repository_without_available_workspaces_initializes_locally() {
+    let temporary = TestDirectory::new();
+    let launch_root = temporary.0.join("launch");
+    create_directory(&launch_root);
+
+    let outcome = WorkspaceManager::new(temporary.app_paths())
+        .discover(&launch_root)
+        .unwrap();
+
+    let DiscoveryOutcome::NotFound { suggested_root } = outcome else {
+        panic!("the current directory should be proposed for initialization");
+    };
+    assert_eq!(suggested_root, fs::canonicalize(launch_root).unwrap());
+}
+
+#[test]
+fn stale_registered_workspaces_are_not_offered() {
+    let temporary = TestDirectory::new();
+    let stale_root = temporary.0.join("stale");
+    let launch_root = temporary.0.join("launch");
+    create_directory(&stale_root);
+    create_directory(&launch_root);
+    let paths = temporary.app_paths();
+    let stale = WorkspaceInitializer::new(paths.clone())
+        .initialize(&stale_root, "Stale")
+        .unwrap();
+    fs::remove_file(stale.paths.shared_config_file()).unwrap();
+
+    let outcome = WorkspaceManager::new(paths).discover(&launch_root).unwrap();
+
+    assert!(matches!(outcome, DiscoveryOutcome::NotFound { .. }));
+}

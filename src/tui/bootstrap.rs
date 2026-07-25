@@ -26,11 +26,25 @@ pub fn run(terminal: &mut DefaultTerminal, paths: AppPaths, start: &Path) -> Res
     let manager = WorkspaceManager::new(paths.clone());
     let context = match manager.discover(start)? {
         DiscoveryOutcome::Found(context) => *context,
-        DiscoveryOutcome::SelectionRequired(workspaces) => {
-            let Some(workspace) = select_workspace(terminal, &workspaces)? else {
+        DiscoveryOutcome::SelectionRequired {
+            workspaces,
+            suggested_root,
+        } => {
+            let Some(choice) = select_workspace(terminal, &workspaces, suggested_root)? else {
                 return Ok(());
             };
-            manager.open_root(&workspace.path)?
+            match choice {
+                WorkspaceChoice::Initialize { root } => {
+                    let initializer = WorkspaceInitializer::new(paths.clone());
+                    let Some(context) = initialize_workspace(terminal, &initializer, root)? else {
+                        return Ok(());
+                    };
+                    context
+                }
+                WorkspaceChoice::Existing { workspace, .. } => {
+                    manager.open_root(&workspace.path)?
+                }
+            }
         }
         DiscoveryOutcome::NotFound { suggested_root } => {
             let initializer = WorkspaceInitializer::new(paths);
@@ -225,86 +239,98 @@ fn initialize_workspace(
 }
 
 #[derive(Debug, Clone)]
-struct WorkspaceChoice {
-    workspace: KnownWorkspace,
-    name: String,
+enum WorkspaceChoice {
+    Initialize {
+        root: PathBuf,
+    },
+    Existing {
+        workspace: KnownWorkspace,
+        name: String,
+    },
 }
 
-fn load_workspace_choices(workspaces: &[KnownWorkspace]) -> Vec<WorkspaceChoice> {
-    workspaces
+fn load_workspace_choices(
+    workspaces: &[KnownWorkspace],
+    suggested_root: PathBuf,
+) -> Vec<WorkspaceChoice> {
+    std::iter::once(WorkspaceChoice::Initialize {
+        root: suggested_root,
+    })
+    .chain(workspaces.iter().cloned().map(|workspace| {
+        let name = SharedWorkspaceStore::from_root(&workspace.path)
+            .load()
+            .map(|config| config.name)
+            .unwrap_or_else(|_| "Unavailable workspace".to_owned());
+        WorkspaceChoice::Existing { workspace, name }
+    }))
+    .collect()
+}
+
+fn render_workspace_choices(frame: &mut Frame, choices: &[WorkspaceChoice], selected: usize) {
+    let area = frame.area();
+    if area.width < MIN_TERMINAL_WIDTH || area.height < MIN_TERMINAL_HEIGHT {
+        frame.render_widget(
+            Paragraph::new("Terminal too small")
+                .alignment(Alignment::Center)
+                .style(Style::default().fg(Color::Cyan)),
+            area,
+        );
+        return;
+    }
+    let theme = UiTheme::default();
+    let items: Vec<_> = choices
         .iter()
-        .cloned()
-        .map(|workspace| {
-            let name = SharedWorkspaceStore::from_root(&workspace.path)
-                .load()
-                .map(|config| config.name)
-                .unwrap_or_else(|_| "Unavailable workspace".to_owned());
-            WorkspaceChoice { workspace, name }
+        .map(|choice| {
+            let (name, path, metadata) = match choice {
+                WorkspaceChoice::Initialize { root } => (
+                    "Create workspace here".to_owned(),
+                    root,
+                    "Initialize a new workspace".to_owned(),
+                ),
+                WorkspaceChoice::Existing { workspace, name } => {
+                    (name.clone(), &workspace.path, workspace.id.to_string())
+                }
+            };
+            ListItem::new(vec![
+                Line::styled(name, Style::default().add_modifier(Modifier::BOLD)),
+                Line::styled(
+                    abbreviated_path(path, area.width.saturating_sub(8) as usize),
+                    Style::default().fg(theme.secondary),
+                ),
+                Line::styled(metadata, Style::default().fg(theme.secondary)),
+            ])
         })
-        .collect()
+        .collect();
+    let mut state = ListState::default().with_selected(Some(selected));
+    let popup = modal_area(
+        area,
+        84,
+        (choices.len().saturating_mul(3) as u16 + 2).min(area.height.saturating_sub(2)),
+    );
+    frame.render_stateful_widget(
+        List::new(items)
+            .block(
+                Block::default()
+                    .title(" KODECK  Select workspace ")
+                    .borders(Borders::ALL)
+                    .border_style(theme.focus()),
+            )
+            .highlight_style(theme.focus())
+            .highlight_symbol("> "),
+        popup,
+        &mut state,
+    );
 }
 
 fn select_workspace(
     terminal: &mut DefaultTerminal,
     workspaces: &[KnownWorkspace],
-) -> Result<Option<KnownWorkspace>> {
-    let choices = load_workspace_choices(workspaces);
+    suggested_root: PathBuf,
+) -> Result<Option<WorkspaceChoice>> {
+    let choices = load_workspace_choices(workspaces, suggested_root);
     let mut selected = 0;
     loop {
-        terminal.draw(|frame| {
-            let area = frame.area();
-            if area.width < MIN_TERMINAL_WIDTH || area.height < MIN_TERMINAL_HEIGHT {
-                frame.render_widget(
-                    Paragraph::new("Terminal too small")
-                        .alignment(Alignment::Center)
-                        .style(Style::default().fg(Color::Cyan)),
-                    area,
-                );
-                return;
-            }
-            let theme = UiTheme::default();
-            let items: Vec<_> = choices
-                .iter()
-                .map(|choice| {
-                    ListItem::new(vec![
-                        Line::styled(
-                            choice.name.as_str(),
-                            Style::default().add_modifier(Modifier::BOLD),
-                        ),
-                        Line::styled(
-                            abbreviated_path(
-                                &choice.workspace.path,
-                                area.width.saturating_sub(8) as usize,
-                            ),
-                            Style::default().fg(theme.secondary),
-                        ),
-                        Line::styled(
-                            choice.workspace.id.to_string(),
-                            Style::default().fg(theme.secondary),
-                        ),
-                    ])
-                })
-                .collect();
-            let mut state = ListState::default().with_selected(Some(selected));
-            let popup = modal_area(
-                area,
-                84,
-                (choices.len().saturating_mul(3) as u16 + 2).min(area.height.saturating_sub(2)),
-            );
-            frame.render_stateful_widget(
-                List::new(items)
-                    .block(
-                        Block::default()
-                            .title(" KODECK  Select workspace ")
-                            .borders(Borders::ALL)
-                            .border_style(theme.focus()),
-                    )
-                    .highlight_style(theme.focus())
-                    .highlight_symbol("> "),
-                popup,
-                &mut state,
-            );
-        })?;
+        terminal.draw(|frame| render_workspace_choices(frame, &choices, selected))?;
 
         let Some(key) = event::read()?.as_key_press_event() else {
             continue;
@@ -313,9 +339,7 @@ fn select_workspace(
             KeyCode::Esc | KeyCode::Char('q') => return Ok(None),
             KeyCode::Up => selected = selected.saturating_sub(1),
             KeyCode::Down => selected = (selected + 1).min(choices.len().saturating_sub(1)),
-            KeyCode::Enter => {
-                return Ok(choices.get(selected).map(|choice| choice.workspace.clone()));
-            }
+            KeyCode::Enter => return Ok(choices.get(selected).cloned()),
             _ => {}
         }
     }
@@ -376,7 +400,9 @@ mod tests {
     fn workspace_choices_load_names_from_shared_configuration() {
         let temporary = TestDirectory::new();
         let root = temporary.0.join("named-project");
+        let suggested_root = temporary.0.join("new-workspace");
         fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&suggested_root).unwrap();
         let paths = AppPaths::new(temporary.0.join("config"), temporary.0.join("data"));
         let context = WorkspaceInitializer::new(paths)
             .initialize(&root, "Loaded Name")
@@ -386,9 +412,26 @@ mod tests {
             path: root,
         };
 
-        let choices = load_workspace_choices(&[known]);
+        let choices = load_workspace_choices(&[known], suggested_root.clone());
 
-        assert_eq!(choices[0].name, "Loaded Name");
-        assert_eq!(choices[0].workspace.id, context.config.id);
+        assert!(matches!(
+            &choices[0],
+            WorkspaceChoice::Initialize { root } if root == &suggested_root
+        ));
+        assert!(matches!(
+            &choices[1],
+            WorkspaceChoice::Existing { workspace, name }
+                if workspace.id == context.config.id && name == "Loaded Name"
+        ));
+
+        let backend = TestBackend::new(100, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| render_workspace_choices(frame, &choices, 0))
+            .unwrap();
+        let rendered = terminal.backend().to_string();
+        assert!(rendered.contains("Create workspace here"));
+        assert!(rendered.contains("Initialize a new workspace"));
+        assert!(rendered.contains("Loaded Name"));
     }
 }
