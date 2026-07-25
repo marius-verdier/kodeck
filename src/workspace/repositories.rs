@@ -112,7 +112,7 @@ fn collect_repository_roots(
         let name = entry.file_name();
         if matches!(
             name.to_str(),
-            Some(".git" | ".kanban" | "target" | "node_modules")
+            Some(".git" | ".kodeck" | "target" | "node_modules")
         ) {
             continue;
         }

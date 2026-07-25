@@ -91,7 +91,7 @@ fn workspace_mvp_keeps_shared_identity_and_private_state_across_its_lifecycle() 
     let shared_json = fs::read_to_string(&shared_file).unwrap();
     assert!(!shared_json.to_ascii_lowercase().contains("token"));
     assert!(!shared_json.contains("Persist me"));
-    let committed_files: Vec<_> = fs::read_dir(original_root.join(".kanban"))
+    let committed_files: Vec<_> = fs::read_dir(original_root.join(".kodeck"))
         .unwrap()
         .map(|entry| entry.unwrap().file_name())
         .collect();
