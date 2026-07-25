@@ -37,20 +37,30 @@ pub fn inspect_repositories(
 }
 
 pub fn suggested_workspace_root(start: &Path) -> Result<PathBuf, WorkspaceError> {
+    let start = canonical_start_directory(start)?;
+    Ok(find_enclosing_git_root(&start).unwrap_or(start))
+}
+
+pub(crate) fn enclosing_git_root(start: &Path) -> Result<Option<PathBuf>, WorkspaceError> {
+    let start = canonical_start_directory(start)?;
+    Ok(find_enclosing_git_root(&start))
+}
+
+fn find_enclosing_git_root(start: &Path) -> Option<PathBuf> {
+    start
+        .ancestors()
+        .find(|ancestor| is_git_repository(ancestor))
+        .map(Path::to_owned)
+}
+
+fn canonical_start_directory(start: &Path) -> Result<PathBuf, WorkspaceError> {
     let start = if start.is_file() {
         start.parent().unwrap_or(start)
     } else {
         start
     };
-    let start = fs::canonicalize(start)
-        .map_err(|source| WorkspaceError::io("canonicalize start directory", start, source))?;
-
-    for ancestor in start.ancestors() {
-        if is_git_repository(ancestor) {
-            return Ok(ancestor.to_owned());
-        }
-    }
-    Ok(start)
+    fs::canonicalize(start)
+        .map_err(|source| WorkspaceError::io("canonicalize start directory", start, source))
 }
 
 pub(crate) fn detect_repositories(root: &Path) -> Result<Vec<RepositoryConfig>, WorkspaceError> {
@@ -112,7 +122,7 @@ fn collect_repository_roots(
         let name = entry.file_name();
         if matches!(
             name.to_str(),
-            Some(".git" | ".kanban" | "target" | "node_modules")
+            Some(".git" | ".kodeck" | "target" | "node_modules")
         ) {
             continue;
         }

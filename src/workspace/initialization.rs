@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::Path;
 
-use crate::domain::{WorkspaceConfig, WorkspaceId};
+use crate::domain::{RepositoryConfig, WorkspaceConfig, WorkspaceId};
 use crate::storage::{AppPaths, WorkspacePaths};
 
 use super::{
@@ -46,6 +46,13 @@ impl WorkspaceInitializer {
         shared_store.save(&workspace)?;
 
         self.manager.open_root(&root)
+    }
+
+    pub fn detected_repositories(
+        &self,
+        root: &Path,
+    ) -> Result<Vec<RepositoryConfig>, WorkspaceError> {
+        detect_repositories(root)
     }
 
     pub fn manager(&self) -> &WorkspaceManager {

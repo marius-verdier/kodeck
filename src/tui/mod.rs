@@ -1,7 +1,8 @@
 mod app;
 mod bootstrap;
-mod popups;
+mod keymap;
 mod state;
+mod ui;
 
 pub use app::App;
 pub use bootstrap::run;

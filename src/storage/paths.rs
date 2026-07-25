@@ -305,13 +305,11 @@ mod tests {
 
         assert_eq!(
             workspace.shared_config_file(),
-            Path::new("/projects/oryx/.kanban/workspace.json")
+            Path::new("/projects/oryx/.kodeck/workspace.json")
         );
         assert_eq!(
             workspace.cards_file(),
-            Path::new(
-                "/data/kodeck/workspaces/f94d2d12-5acf-4370-bb04-41ec860bb205/cards.json"
-            )
+            Path::new("/data/kodeck/workspaces/f94d2d12-5acf-4370-bb04-41ec860bb205/cards.json")
         );
         assert_eq!(
             workspace.sync_queue_file(),
