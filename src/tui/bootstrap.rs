@@ -12,7 +12,6 @@ use tui_input::backend::crossterm::EventHandler;
 
 use crate::credentials::credential_warnings;
 use crate::domain::KnownWorkspace;
-use crate::scan::run_workspace_scan;
 use crate::storage::AppPaths;
 use crate::workspace::{
     DiscoveryOutcome, SharedWorkspaceStore, WorkspaceContext, WorkspaceInitializer,
@@ -56,12 +55,11 @@ pub fn run(terminal: &mut DefaultTerminal, paths: AppPaths, start: &Path) -> Res
         }
     };
 
-    let findings = run_workspace_scan(&context);
     let mut context = context;
     context
         .warnings
         .extend(credential_warnings(&context.config));
-    App::from_workspace(context, findings.len()).run(terminal)
+    App::from_workspace(context).run(terminal)
 }
 
 struct InitializationForm {

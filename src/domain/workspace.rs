@@ -5,7 +5,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::{ProviderConfig, ProviderId};
+use super::{ProviderConfig, ProviderId, TaskPriority};
 
 pub const WORKSPACE_SCHEMA_VERSION: u32 = 1;
 
@@ -110,6 +110,31 @@ pub struct StatusMapping {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct AnnotationTagMapping {
+    pub tag: String,
+    pub column_id: ColumnId,
+    pub priority: TaskPriority,
+}
+
+impl AnnotationTagMapping {
+    pub fn defaults() -> Vec<Self> {
+        [
+            ("TODO", TaskPriority::LOW),
+            ("FIXME", TaskPriority::HIGH),
+            ("BUG", TaskPriority::HIGH),
+        ]
+        .into_iter()
+        .map(|(tag, priority)| Self {
+            tag: tag.to_owned(),
+            column_id: ColumnId::from("inbox"),
+            priority,
+        })
+        .collect()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WorkspaceConfig {
     pub schema_version: u32,
     pub id: WorkspaceId,
@@ -121,6 +146,8 @@ pub struct WorkspaceConfig {
     pub providers: Vec<ProviderConfig>,
     #[serde(default)]
     pub status_mappings: Vec<StatusMapping>,
+    #[serde(default = "AnnotationTagMapping::defaults")]
+    pub annotation_tags: Vec<AnnotationTagMapping>,
 }
 
 impl WorkspaceConfig {
@@ -133,6 +160,7 @@ impl WorkspaceConfig {
             columns: ColumnConfig::defaults(),
             providers: Vec::new(),
             status_mappings: Vec::new(),
+            annotation_tags: AnnotationTagMapping::defaults(),
         }
     }
 
@@ -281,6 +309,36 @@ impl WorkspaceConfig {
                         "provider status '{}' is mapped more than once for '{}'",
                         mapping.provider_status, mapping.provider_id
                     ),
+                );
+            }
+        }
+
+        let mut annotation_tags = HashSet::new();
+        for (index, mapping) in self.annotation_tags.iter().enumerate() {
+            let path = format!("annotation_tags[{index}]");
+            let normalized = mapping.tag.to_ascii_uppercase();
+            if mapping.tag.is_empty()
+                || !mapping.tag.chars().all(|character| {
+                    character.is_ascii_alphanumeric() || matches!(character, '_' | '-')
+                })
+            {
+                push_issue(
+                    &mut errors,
+                    format!("{path}.tag"),
+                    "annotation tag must contain only ASCII letters, digits, '_' or '-'",
+                );
+            } else if !annotation_tags.insert(normalized) {
+                push_issue(
+                    &mut errors,
+                    format!("{path}.tag"),
+                    format!("duplicate annotation tag '{}'", mapping.tag),
+                );
+            }
+            if !column_ids.contains(mapping.column_id.as_str()) {
+                push_issue(
+                    &mut errors,
+                    format!("{path}.column_id"),
+                    format!("unknown column id '{}'", mapping.column_id),
                 );
             }
         }

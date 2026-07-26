@@ -1,7 +1,9 @@
 use ratatui_textarea::TextArea;
+use std::collections::HashSet;
+use std::sync::mpsc::Receiver;
 use tui_input::Input;
 
-use crate::domain::{CardId, ColumnId, Task, TaskPriority};
+use crate::domain::{AnnotationId, CardId, ColumnId, Finding, Task, TaskPriority};
 
 pub(super) struct ArchivedTask {
     pub column_id: ColumnId,
@@ -37,6 +39,62 @@ pub(super) struct GotoLabelsState {
     pub input: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum AnnotationFilter {
+    Unassigned,
+    All,
+    Missing,
+    Ignored,
+}
+
+impl AnnotationFilter {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Unassigned => Self::All,
+            Self::All => Self::Missing,
+            Self::Missing => Self::Ignored,
+            Self::Ignored => Self::Unassigned,
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Unassigned => "unassigned",
+            Self::All => "all",
+            Self::Missing => "missing",
+            Self::Ignored => "ignored",
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(super) struct AnnotationReviewState {
+    pub focused: usize,
+    pub selected: HashSet<AnnotationId>,
+    pub filter: AnnotationFilter,
+}
+
+impl Default for AnnotationReviewState {
+    fn default() -> Self {
+        Self {
+            focused: 0,
+            selected: HashSet::new(),
+            filter: AnnotationFilter::Unassigned,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum AnnotationSyncTrigger {
+    Open,
+    Manual,
+}
+
+pub(super) struct AnnotationSyncState {
+    pub receiver: Receiver<Vec<Finding>>,
+    pub trigger: AnnotationSyncTrigger,
+}
+
 pub(super) struct ColumnFormState {
     pub input: Input,
     pub error: Option<String>,
@@ -64,12 +122,14 @@ pub(super) enum InputType {
     CreatingTaskTitle,
     CreatingTaskDescription,
     CreatingTaskPriority,
+    CreatingTaskColumn,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum TaskFormMode {
     Create,
     Edit(CardId),
+    CreateFromAnnotations(Vec<AnnotationId>),
 }
 
 pub(super) struct TaskFormState<'a> {
@@ -77,6 +137,7 @@ pub(super) struct TaskFormState<'a> {
     pub title: Input,
     pub description: TextArea<'a>,
     pub priority: TaskPriority,
+    pub target_column: Option<usize>,
     pub error: Option<String>,
 }
 
@@ -87,6 +148,7 @@ impl<'a> TaskFormState<'a> {
             title: Input::default(),
             description: TextArea::default(),
             priority: TaskPriority::LOW,
+            target_column: None,
             error: None,
         }
     }
@@ -97,6 +159,24 @@ impl<'a> TaskFormState<'a> {
             title: Input::from(task.title.clone()),
             description: TextArea::from(task.description.split('\n')),
             priority: task.priority,
+            target_column: None,
+            error: None,
+        }
+    }
+
+    pub fn from_annotations(
+        annotation_ids: Vec<AnnotationId>,
+        title: String,
+        description: String,
+        priority: TaskPriority,
+        target_column: usize,
+    ) -> Self {
+        Self {
+            mode: TaskFormMode::CreateFromAnnotations(annotation_ids),
+            title: Input::from(title),
+            description: TextArea::from(description.lines()),
+            priority,
+            target_column: Some(target_column),
             error: None,
         }
     }

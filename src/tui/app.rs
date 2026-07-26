@@ -1,6 +1,7 @@
 mod board;
 mod controller;
 mod render;
+mod sync;
 #[cfg(test)]
 mod tests;
 
@@ -11,12 +12,13 @@ use color_eyre::eyre::Result;
 use crossterm::event;
 use ratatui::DefaultTerminal;
 
-use crate::domain::{CardId, Column, Task, UiStateFile, WorkspaceConfig};
+use crate::domain::{CardId, CodeAnnotation, Column, Task, UiStateFile, WorkspaceConfig};
 use crate::workspace::{PrivateWorkspaceStore, SharedWorkspaceStore, WorkspaceContext};
 
 use super::state::{
-    ArchivedTask, ColumnFormState, ConfirmationState, DetailState, GotoLabelsState, InputMode,
-    InputType, MovePickerState, StatusMessage, TaskFormState,
+    AnnotationReviewState, AnnotationSyncState, ArchivedTask, ColumnFormState, ConfirmationState,
+    DetailState, GotoLabelsState, InputMode, InputType, MovePickerState, StatusMessage,
+    TaskFormState,
 };
 use super::ui::{UiTheme, ViewportState};
 
@@ -27,6 +29,9 @@ pub struct App<'a> {
     private_store: PrivateWorkspaceStore,
     ui_state: UiStateFile,
     findings_count: usize,
+    annotations: Vec<CodeAnnotation>,
+    annotation_review: Option<AnnotationReviewState>,
+    annotation_sync: Option<AnnotationSyncState>,
     last_error: Option<String>,
     input_mode: InputMode,
     active_input: Option<InputType>,
@@ -53,7 +58,7 @@ pub struct App<'a> {
 }
 
 impl App<'_> {
-    pub fn from_workspace(context: WorkspaceContext, findings_count: usize) -> Self {
+    pub fn from_workspace(context: WorkspaceContext) -> Self {
         let mut warnings = context.warnings.clone();
         let mut columns: Vec<_> = context
             .config
@@ -62,6 +67,11 @@ impl App<'_> {
             .map(|column| Column::new(column.id.clone(), column.name.clone(), 50))
             .collect();
         let cards = &context.private_state.cards;
+        let annotations = cards.annotations.clone();
+        let findings_count = annotations
+            .iter()
+            .filter(|annotation| annotation.present)
+            .count();
         let cards_by_id: HashMap<_, _> = cards.cards.iter().map(|card| (card.id, card)).collect();
         let mut placed = HashSet::new();
 
@@ -141,6 +151,9 @@ impl App<'_> {
             private_store,
             ui_state,
             findings_count,
+            annotations,
+            annotation_review: None,
+            annotation_sync: None,
             last_error: None,
             input_mode: InputMode::Normal,
             active_input: None,
@@ -169,9 +182,12 @@ impl App<'_> {
     }
 
     pub fn run(mut self, terminal: &mut DefaultTerminal) -> Result<()> {
+        self.start_annotation_sync(super::state::AnnotationSyncTrigger::Open);
         loop {
+            self.poll_annotation_sync();
             terminal.draw(|frame| self.render(frame))?;
-            if let Some(key) = event::read()?.as_key_press_event()
+            if event::poll(std::time::Duration::from_millis(100))?
+                && let Some(key) = event::read()?.as_key_press_event()
                 && self.handle_key(key)
             {
                 self.persist_ui_state();

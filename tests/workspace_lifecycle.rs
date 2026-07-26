@@ -91,6 +91,7 @@ fn discovers_from_a_child_and_restores_local_cards_after_restart() {
         priority: TaskPriority::HIGH,
         column_id: column_id.clone(),
         archived: false,
+        archived_by_sync: false,
     });
     cards.ordering = BTreeMap::from([(column_id, vec![card_id])]);
     initialized.private_store().save_cards(&cards).unwrap();
@@ -180,7 +181,16 @@ fn scans_every_available_repository_and_skips_missing_ones() {
         .initialize(&root, "Oryx")
         .unwrap();
 
-    assert_eq!(kodeck::scan::run_workspace_scan(&context).len(), 2);
+    let findings = kodeck::scan::run_workspace_scan(&context);
+    assert_eq!(findings.len(), 2);
+    assert_eq!(
+        findings
+            .iter()
+            .map(|finding| finding.repository_id.as_str())
+            .collect::<std::collections::HashSet<_>>(),
+        std::collections::HashSet::from(["migration", "reconciliation"])
+    );
+    assert!(findings.iter().all(|finding| finding.path == "main.rs"));
 
     fs::remove_dir_all(root.join("reconciliation")).unwrap();
     let reopened = WorkspaceManager::new(paths).open_root(&root).unwrap();

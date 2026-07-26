@@ -33,6 +33,58 @@ impl fmt::Display for CardId {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct AnnotationId(Uuid);
+
+impl AnnotationId {
+    pub fn generate() -> Self {
+        Self(Uuid::new_v4())
+    }
+
+    pub const fn from_uuid(value: Uuid) -> Self {
+        Self(value)
+    }
+
+    pub const fn as_uuid(&self) -> &Uuid {
+        &self.0
+    }
+}
+
+impl fmt::Display for AnnotationId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AnnotationDisposition {
+    #[default]
+    Unassigned,
+    Ignored,
+    Linked {
+        card_id: CardId,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CodeAnnotation {
+    pub id: AnnotationId,
+    pub repository_id: super::RepositoryId,
+    pub path: String,
+    pub line: usize,
+    pub tag: String,
+    pub message: String,
+    #[serde(default)]
+    pub occurrence: usize,
+    #[serde(default)]
+    pub present: bool,
+    #[serde(default)]
+    pub disposition: AnnotationDisposition,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LocalCard {
@@ -44,6 +96,8 @@ pub struct LocalCard {
     pub column_id: ColumnId,
     #[serde(default)]
     pub archived: bool,
+    #[serde(default)]
+    pub archived_by_sync: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -55,6 +109,8 @@ pub struct CardsFile {
     pub cards: Vec<LocalCard>,
     #[serde(default)]
     pub ordering: BTreeMap<ColumnId, Vec<CardId>>,
+    #[serde(default)]
+    pub annotations: Vec<CodeAnnotation>,
 }
 
 impl CardsFile {
@@ -64,6 +120,7 @@ impl CardsFile {
             workspace_id,
             cards: Vec::new(),
             ordering: BTreeMap::new(),
+            annotations: Vec::new(),
         }
     }
 
@@ -89,6 +146,47 @@ impl CardsFile {
                 return Err(PrivateStateError::Invalid(format!(
                     "card '{}' has an empty title",
                     card.id
+                )));
+            }
+        }
+
+        let mut annotation_ids = HashSet::new();
+        for annotation in &self.annotations {
+            if annotation.id.as_uuid().is_nil() {
+                return Err(PrivateStateError::Invalid(
+                    "annotation UUID must not be nil".to_owned(),
+                ));
+            }
+            if !annotation_ids.insert(annotation.id) {
+                return Err(PrivateStateError::Invalid(format!(
+                    "duplicate annotation id '{}'",
+                    annotation.id
+                )));
+            }
+            if annotation.path.trim().is_empty()
+                || annotation.path.starts_with('/')
+                || annotation.path.split('/').any(|part| part == "..")
+            {
+                return Err(PrivateStateError::Invalid(format!(
+                    "annotation '{}' has an invalid relative path",
+                    annotation.id
+                )));
+            }
+            if annotation.line == 0
+                || annotation.tag.trim().is_empty()
+                || annotation.message.trim().is_empty()
+            {
+                return Err(PrivateStateError::Invalid(format!(
+                    "annotation '{}' has incomplete source data",
+                    annotation.id
+                )));
+            }
+            if let AnnotationDisposition::Linked { card_id } = annotation.disposition
+                && !card_ids.contains(&card_id)
+            {
+                return Err(PrivateStateError::Invalid(format!(
+                    "annotation '{}' links unknown card '{card_id}'",
+                    annotation.id
                 )));
             }
         }
@@ -281,4 +379,36 @@ fn validate_header(
         });
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_cards_files_default_to_no_annotations_or_sync_archives() {
+        let workspace_id = WorkspaceId::generate();
+        let card_id = CardId::generate();
+        let json = format!(
+            r#"{{
+                "schema_version": 1,
+                "workspace_id": "{workspace_id}",
+                "cards": [{{
+                    "id": "{card_id}",
+                    "title": "Legacy",
+                    "description": "Existing data",
+                    "priority": "low",
+                    "column_id": "inbox",
+                    "archived": false
+                }}],
+                "ordering": {{ "inbox": ["{card_id}"] }}
+            }}"#
+        );
+
+        let cards: CardsFile = serde_json::from_str(&json).unwrap();
+
+        assert!(cards.annotations.is_empty());
+        assert!(!cards.cards[0].archived_by_sync);
+        assert!(cards.validate_for(workspace_id).is_ok());
+    }
 }

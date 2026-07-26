@@ -13,6 +13,68 @@ use crate::tui::ui::BoardLayout;
 use super::App;
 
 impl App<'_> {
+    pub(super) fn replace_cards_file(&mut self, cards: CardsFile) {
+        let focused_card = self.focused_card_id();
+        let cards_by_id: std::collections::HashMap<_, _> =
+            cards.cards.iter().map(|card| (card.id, card)).collect();
+        let mut placed = std::collections::HashSet::new();
+        let mut columns: Vec<_> = self
+            .workspace_config
+            .columns
+            .iter()
+            .map(|column| Column::new(column.id.clone(), column.name.clone(), 50))
+            .collect();
+        for column in &mut columns {
+            if let Some(card_ids) = cards.ordering.get(&column.id) {
+                for card_id in card_ids {
+                    if let Some(card) = cards_by_id.get(card_id)
+                        && !card.archived
+                    {
+                        let order = column.tasks.len();
+                        column.tasks.push(Task::from_local_card(card, order));
+                        placed.insert(card.id);
+                    }
+                }
+            }
+        }
+        for card in cards
+            .cards
+            .iter()
+            .filter(|card| !card.archived && !placed.contains(&card.id))
+        {
+            let target = columns
+                .iter()
+                .position(|column| column.id == card.column_id)
+                .unwrap_or(0);
+            let order = columns[target].tasks.len();
+            columns[target]
+                .tasks
+                .push(Task::from_local_card(card, order));
+        }
+        self.archived_tasks = cards
+            .cards
+            .iter()
+            .filter(|card| card.archived)
+            .map(|card| ArchivedTask {
+                column_id: card.column_id.clone(),
+                task: Task::from_local_card(card, 0),
+            })
+            .collect();
+        self.annotations = cards.annotations;
+        self.findings_count = self
+            .annotations
+            .iter()
+            .filter(|annotation| annotation.present)
+            .count();
+        self.columns = columns;
+        self.viewport.ensure_columns(self.columns.len());
+        if let Some(card_id) = focused_card.filter(|card_id| self.locate_card(*card_id).is_some()) {
+            self.focus_card(card_id);
+        } else {
+            self.clamp_focus();
+        }
+    }
+
     pub(super) fn move_focus_column(&mut self, direction: i8) {
         let target = if direction < 0 {
             self.focused_column.saturating_sub(1)
@@ -315,7 +377,8 @@ impl App<'_> {
         for card_id in card_ids {
             if let Some((column_index, task_index)) = self.locate_card(card_id) {
                 let column_id = self.columns[column_index].id.clone();
-                let task = self.columns[column_index].tasks.remove(task_index);
+                let mut task = self.columns[column_index].tasks.remove(task_index);
+                task.archived_by_sync = false;
                 self.archived_tasks.push(ArchivedTask { column_id, task });
             }
         }
@@ -455,8 +518,9 @@ impl App<'_> {
             form.error = Some("Description is required".to_owned());
             return;
         }
-        let mode = form.mode;
+        let mode = form.mode.clone();
         let priority = form.priority;
+        let target_column = form.target_column;
 
         match mode {
             TaskFormMode::Create => {
@@ -482,6 +546,30 @@ impl App<'_> {
                 task.priority = priority;
                 self.focused_column = column_index;
                 self.focused_task = task_index;
+            }
+            TaskFormMode::CreateFromAnnotations(annotation_ids) => {
+                let column_index = target_column
+                    .unwrap_or(self.focused_column)
+                    .min(self.columns.len().saturating_sub(1));
+                let task = Task::new(
+                    title,
+                    description,
+                    priority,
+                    self.columns[column_index].tasks.len(),
+                );
+                let card_id = task.id;
+                self.columns[column_index].tasks.push(task);
+                self.focused_column = column_index;
+                self.focused_task = self.columns[column_index].tasks.len() - 1;
+                for annotation in &mut self.annotations {
+                    if annotation_ids.contains(&annotation.id) {
+                        annotation.disposition =
+                            crate::domain::AnnotationDisposition::Linked { card_id };
+                    }
+                }
+                if let Some(review) = &mut self.annotation_review {
+                    review.selected.clear();
+                }
             }
         }
 
@@ -541,6 +629,7 @@ impl App<'_> {
                 priority: task.priority,
                 column_id: column.id.clone(),
                 archived: false,
+                archived_by_sync: task.archived_by_sync,
             }));
         }
         cards.extend(self.archived_tasks.iter().map(|archived| LocalCard {
@@ -550,6 +639,7 @@ impl App<'_> {
             priority: archived.task.priority,
             column_id: archived.column_id.clone(),
             archived: true,
+            archived_by_sync: archived.task.archived_by_sync,
         }));
 
         CardsFile {
@@ -557,6 +647,7 @@ impl App<'_> {
             workspace_id: self.workspace_config.id,
             cards,
             ordering,
+            annotations: self.annotations.clone(),
         }
     }
 

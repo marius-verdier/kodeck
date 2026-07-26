@@ -8,7 +8,7 @@ use ratatui::widgets::{
     Block, Borders, Clear, List, ListItem, ListState, Padding, Paragraph, Wrap,
 };
 
-use crate::domain::TaskPriority;
+use crate::domain::{AnnotationDisposition, TaskPriority};
 use crate::tui::keymap::{self, KeyContext};
 use crate::tui::state::{Confirmation, InputType, StatusLevel, StatusMessage, TaskFormMode};
 use crate::tui::ui::{BoardLayout, DetailPlacement, abbreviated_path, modal_area, truncate};
@@ -58,6 +58,7 @@ impl App<'_> {
         self.render_move_picker(frame, layout.board);
         self.render_goto_menu(frame, layout.board);
         self.render_help(frame, layout.board);
+        self.render_annotation_review(frame, layout.board);
         self.render_column_form(frame, layout.board);
         self.render_task_form(frame, layout.board);
     }
@@ -345,8 +346,37 @@ impl App<'_> {
             Paragraph::new("Description").style(self.theme.focus()),
             description_title,
         );
+        let sources = self
+            .annotations
+            .iter()
+            .filter(|annotation| {
+                matches!(
+                    annotation.disposition,
+                    AnnotationDisposition::Linked { card_id } if card_id == task.id
+                )
+            })
+            .map(|annotation| {
+                format!(
+                    "[{}] {}:{}:{}  {}",
+                    if annotation.present {
+                        "present"
+                    } else {
+                        "missing"
+                    },
+                    annotation.repository_id,
+                    annotation.path,
+                    annotation.line,
+                    annotation.tag
+                )
+            })
+            .collect::<Vec<_>>();
+        let description = if sources.is_empty() {
+            task.description.clone()
+        } else {
+            format!("Sources\n{}\n\n{}", sources.join("\n"), task.description)
+        };
         frame.render_widget(
-            Paragraph::new(task.description.as_str())
+            Paragraph::new(description)
                 .scroll((detail.scroll, 0))
                 .wrap(Wrap { trim: false }),
             description_area,
@@ -475,6 +505,108 @@ impl App<'_> {
         );
     }
 
+    pub(super) fn render_annotation_review(&self, frame: &mut Frame, area: Rect) {
+        let Some(review) = &self.annotation_review else {
+            return;
+        };
+        let ids = self.visible_annotation_ids();
+        let popup = modal_area(
+            area,
+            area.width.saturating_sub(4),
+            area.height.saturating_sub(2),
+        );
+        frame.render_widget(Clear, popup);
+        let sync_status = if self.annotation_sync.is_some() {
+            " · syncing…"
+        } else {
+            ""
+        };
+        let title = format!(
+            " Annotations · {} · {} selected{sync_status} ",
+            review.filter.label(),
+            review.selected.len()
+        );
+        let block = self.modal_block(title);
+        let inner = block.inner(popup);
+        frame.render_widget(block, popup);
+        let [list_area, actions] =
+            Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(inner);
+        if ids.is_empty() {
+            frame.render_widget(
+                Paragraph::new("No annotations in this filter")
+                    .alignment(Alignment::Center)
+                    .style(Style::default().fg(self.theme.secondary)),
+                list_area,
+            );
+        } else {
+            let mut previous_group: Option<(String, String)> = None;
+            let items = ids
+                .iter()
+                .filter_map(|id| {
+                    self.annotations
+                        .iter()
+                        .find(|annotation| annotation.id == *id)
+                })
+                .map(|annotation| {
+                    let group = (
+                        annotation.repository_id.as_str().to_owned(),
+                        annotation.path.clone(),
+                    );
+                    let group_line = if previous_group.as_ref() == Some(&group) {
+                        Line::raw("")
+                    } else {
+                        previous_group = Some(group.clone());
+                        Line::styled(format!("{} / {}", group.0, group.1), self.theme.focus())
+                    };
+                    let badge = if !annotation.present {
+                        "MISSING"
+                    } else {
+                        match annotation.disposition {
+                            AnnotationDisposition::Unassigned => "NEW",
+                            AnnotationDisposition::Ignored => "IGNORED",
+                            AnnotationDisposition::Linked { .. } => "LINKED",
+                        }
+                    };
+                    let marker = if review.selected.contains(&annotation.id) {
+                        "*"
+                    } else {
+                        " "
+                    };
+                    ListItem::new(vec![
+                        group_line,
+                        Line::from(vec![
+                            Span::styled(
+                                format!("{marker} [{badge:<7}] "),
+                                Style::default().fg(self.theme.secondary),
+                            ),
+                            Span::styled(
+                                format!("{}:{} ", annotation.tag, annotation.line),
+                                Style::default().add_modifier(Modifier::BOLD),
+                            ),
+                            Span::raw(annotation.message.clone()),
+                        ]),
+                    ])
+                })
+                .collect::<Vec<_>>();
+            let mut state = ListState::default()
+                .with_selected(Some(review.focused.min(items.len().saturating_sub(1))));
+            frame.render_stateful_widget(
+                List::new(items)
+                    .highlight_style(self.theme.focus())
+                    .highlight_symbol("> "),
+                list_area,
+                &mut state,
+            );
+        }
+        frame.render_widget(
+            Paragraph::new(
+                "j/k navigate  Space select  c create card  i ignore  f filter  Ctrl+R rescan  Esc close",
+            )
+            .style(Style::default().fg(self.theme.secondary)),
+            actions,
+        );
+    }
+
     pub(super) fn render_column_form(&self, frame: &mut Frame, area: Rect) {
         let Some(form) = &self.create_column_popup else {
             return;
@@ -524,12 +656,13 @@ impl App<'_> {
         let popup = modal_area(
             area,
             area.width.saturating_sub(8).min(80),
-            area.height.saturating_sub(2).min(18),
+            area.height.saturating_sub(2).min(21),
         );
         frame.render_widget(Clear, popup);
-        let title = match form.mode {
+        let title = match &form.mode {
             TaskFormMode::Create => " New card ",
             TaskFormMode::Edit(_) => " Edit card ",
+            TaskFormMode::CreateFromAnnotations(_) => " New card from annotations ",
         };
         let block = Block::default()
             .title(title)
@@ -542,12 +675,14 @@ impl App<'_> {
             title_area,
             description_area,
             priority_area,
+            column_area,
             error_area,
             actions_area,
         ] = Layout::vertical([
             Constraint::Length(3),
             Constraint::Fill(1),
             Constraint::Length(3),
+            Constraint::Length(if form.target_column.is_some() { 3 } else { 0 }),
             Constraint::Length(1),
             Constraint::Length(1),
         ])
@@ -632,6 +767,27 @@ impl App<'_> {
             Paragraph::new(Line::from(priority_line)).alignment(Alignment::Center),
             priority_inner,
         );
+        if let Some(column_index) = form.target_column {
+            let column_active = matches!(self.active_input, Some(InputType::CreatingTaskColumn));
+            let block = Block::bordered()
+                .title(" Column ")
+                .border_style(if column_active {
+                    self.theme.focus()
+                } else {
+                    Style::default().fg(self.theme.secondary)
+                });
+            let inner = block.inner(column_area);
+            frame.render_widget(block, column_area);
+            let name = self
+                .columns
+                .get(column_index)
+                .map(|column| column.name.as_str())
+                .unwrap_or("Unknown");
+            frame.render_widget(
+                Paragraph::new(format!("←  {name}  →")).alignment(Alignment::Center),
+                inner,
+            );
+        }
         if let Some(error) = &form.error {
             frame.render_widget(
                 Paragraph::new(error.as_str()).style(Style::default().fg(self.theme.error)),
@@ -639,8 +795,12 @@ impl App<'_> {
             );
         }
         frame.render_widget(
-            Paragraph::new("Tab next field  ←/→ priority  Ctrl+S save  Esc cancel")
-                .style(Style::default().fg(self.theme.secondary)),
+            Paragraph::new(if form.target_column.is_some() {
+                "Tab next field  ←/→ priority/column  Ctrl+S save  Esc cancel"
+            } else {
+                "Tab next field  ←/→ priority  Ctrl+S save  Esc cancel"
+            })
+            .style(Style::default().fg(self.theme.secondary)),
             actions_area,
         );
     }

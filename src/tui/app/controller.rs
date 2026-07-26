@@ -6,7 +6,7 @@ use crate::domain::TaskPriority;
 
 use super::App;
 use crate::tui::keymap::{self, Action, KeyContext};
-use crate::tui::state::{InputMode, InputType, StatusMessage};
+use crate::tui::state::{AnnotationSyncTrigger, InputMode, InputType, StatusMessage};
 
 impl App<'_> {
     pub(super) fn handle_key(&mut self, key: KeyEvent) -> bool {
@@ -46,6 +46,8 @@ impl App<'_> {
             KeyContext::Goto
         } else if self.create_column_popup.is_some() || self.task_form.is_some() {
             KeyContext::Form
+        } else if self.annotation_review.is_some() {
+            KeyContext::Annotations
         } else if self.detail.is_some() {
             KeyContext::Details
         } else {
@@ -79,7 +81,18 @@ impl App<'_> {
             Action::MoveColumnLeft => self.move_focused_column(-1),
             Action::MoveColumnRight => self.move_focused_column(1),
             Action::OpenMovePicker => self.open_move_picker(),
+            Action::ToggleSelection if self.annotation_review.is_some() => {
+                self.toggle_annotation_selection();
+            }
             Action::ToggleSelection => self.toggle_focused_selection(),
+            Action::SyncAnnotations => {
+                self.start_annotation_sync(AnnotationSyncTrigger::Manual);
+            }
+            Action::AnnotationPrevious => self.move_annotation_focus(-1),
+            Action::AnnotationNext => self.move_annotation_focus(1),
+            Action::CreateFromAnnotations => self.open_annotation_card_form(),
+            Action::IgnoreAnnotations => self.ignore_selected_annotations(),
+            Action::CycleAnnotationFilter => self.cycle_annotation_filter(),
             Action::EnterGoto => self.goto_pending = true,
             Action::GotoFirstCard => {
                 self.goto_pending = false;
@@ -150,10 +163,23 @@ impl App<'_> {
             return;
         }
 
-        if matches!(self.active_input, Some(InputType::CreatingTaskPriority)) {
+        if matches!(
+            self.active_input,
+            Some(InputType::CreatingTaskPriority | InputType::CreatingTaskColumn)
+        ) {
             match key.code {
-                KeyCode::Left => self.rotate_priority(-1),
-                KeyCode::Right => self.rotate_priority(1),
+                KeyCode::Left
+                    if matches!(self.active_input, Some(InputType::CreatingTaskPriority)) =>
+                {
+                    self.rotate_priority(-1);
+                }
+                KeyCode::Right
+                    if matches!(self.active_input, Some(InputType::CreatingTaskPriority)) =>
+                {
+                    self.rotate_priority(1);
+                }
+                KeyCode::Left => self.rotate_target_column(-1),
+                KeyCode::Right => self.rotate_target_column(1),
                 _ => {}
             }
             return;
@@ -180,7 +206,7 @@ impl App<'_> {
                     popup.error = None;
                 }
             }
-            Some(InputType::CreatingTaskPriority) | None => {}
+            Some(InputType::CreatingTaskPriority | InputType::CreatingTaskColumn) | None => {}
         }
     }
 
@@ -199,19 +225,38 @@ impl App<'_> {
                     popup.description.input(input);
                 }
             }
-            Some(InputType::CreatingColumn) | Some(InputType::CreatingTaskPriority) | None => {}
+            Some(
+                InputType::CreatingColumn
+                | InputType::CreatingTaskPriority
+                | InputType::CreatingTaskColumn,
+            )
+            | None => {}
         }
     }
 
     pub(super) fn cycle_form_field(&mut self, direction: i8) {
-        self.active_input = match (self.active_input, direction) {
-            (Some(InputType::CreatingTaskTitle), 1) => Some(InputType::CreatingTaskDescription),
-            (Some(InputType::CreatingTaskDescription), 1) => Some(InputType::CreatingTaskPriority),
-            (Some(InputType::CreatingTaskPriority), 1) => Some(InputType::CreatingTaskTitle),
-            (Some(InputType::CreatingTaskTitle), -1) => Some(InputType::CreatingTaskPriority),
-            (Some(InputType::CreatingTaskDescription), -1) => Some(InputType::CreatingTaskTitle),
-            (Some(InputType::CreatingTaskPriority), -1) => Some(InputType::CreatingTaskDescription),
-            (current, _) => current,
+        let has_column = self
+            .task_form
+            .as_ref()
+            .is_some_and(|form| form.target_column.is_some());
+        self.active_input = match (self.active_input, direction, has_column) {
+            (Some(InputType::CreatingTaskTitle), 1, _) => Some(InputType::CreatingTaskDescription),
+            (Some(InputType::CreatingTaskDescription), 1, _) => {
+                Some(InputType::CreatingTaskPriority)
+            }
+            (Some(InputType::CreatingTaskPriority), 1, true) => Some(InputType::CreatingTaskColumn),
+            (Some(InputType::CreatingTaskPriority), 1, false)
+            | (Some(InputType::CreatingTaskColumn), 1, _) => Some(InputType::CreatingTaskTitle),
+            (Some(InputType::CreatingTaskTitle), -1, true) => Some(InputType::CreatingTaskColumn),
+            (Some(InputType::CreatingTaskTitle), -1, false) => {
+                Some(InputType::CreatingTaskPriority)
+            }
+            (Some(InputType::CreatingTaskDescription), -1, _) => Some(InputType::CreatingTaskTitle),
+            (Some(InputType::CreatingTaskPriority), -1, _) => {
+                Some(InputType::CreatingTaskDescription)
+            }
+            (Some(InputType::CreatingTaskColumn), -1, _) => Some(InputType::CreatingTaskPriority),
+            (current, _, _) => current,
         };
     }
 
@@ -226,6 +271,23 @@ impl App<'_> {
             popup.priority = rotate(popup.priority);
             popup.error = None;
         }
+    }
+
+    pub(super) fn rotate_target_column(&mut self, direction: i8) {
+        let Some(form) = &mut self.task_form else {
+            return;
+        };
+        let Some(column) = &mut form.target_column else {
+            return;
+        };
+        *column = if direction < 0 {
+            column.saturating_sub(1)
+        } else {
+            column
+                .saturating_add(1)
+                .min(self.columns.len().saturating_sub(1))
+        };
+        form.error = None;
     }
 
     pub(super) fn save_active_form(&mut self) {
@@ -264,6 +326,8 @@ impl App<'_> {
             self.goto_pending = false;
         } else if self.move_picker.is_some() {
             self.move_picker = None;
+        } else if self.annotation_review.is_some() {
+            self.annotation_review = None;
         } else if self.detail.is_some() {
             self.detail = None;
         } else if !self.selected_cards.is_empty() {

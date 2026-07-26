@@ -7,7 +7,10 @@ use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
 
 use super::*;
-use crate::domain::TaskPriority;
+use crate::domain::{
+    AnnotationDisposition, AnnotationId, CodeAnnotation, RepositoryConfig, RepositoryId,
+    TaskPriority,
+};
 use crate::storage::AppPaths;
 use crate::tui::state::TaskFormMode;
 use crate::tui::ui::BoardLayout;
@@ -36,7 +39,7 @@ fn test_app(temporary: &TestDirectory) -> App<'static> {
     let context = WorkspaceInitializer::new(paths)
         .initialize(&root, "Test Board")
         .unwrap();
-    App::from_workspace(context, 0)
+    App::from_workspace(context)
 }
 
 fn add_task(app: &mut App<'_>, column: usize, title: &str) -> CardId {
@@ -72,7 +75,7 @@ fn board_mutations_are_reloaded_from_workspace_storage() {
     let context = WorkspaceInitializer::new(paths.clone())
         .initialize(&root, "Test Board")
         .unwrap();
-    let mut app = App::from_workspace(context, 0);
+    let mut app = App::from_workspace(context);
 
     app.focused_column = app
         .columns
@@ -112,7 +115,7 @@ fn empty_workspace_board_renders_without_panicking() {
     let context = WorkspaceInitializer::new(paths)
         .initialize(&root, "Empty Board")
         .unwrap();
-    let mut app = App::from_workspace(context, 0);
+    let mut app = App::from_workspace(context);
     let backend = TestBackend::new(120, 30);
     let mut terminal = Terminal::new(backend).unwrap();
 
@@ -153,7 +156,7 @@ fn column_reordering_preserves_focus_selection_offsets_and_persists() {
     let context = WorkspaceInitializer::new(paths.clone())
         .initialize(&root, "Reordered Board")
         .unwrap();
-    let mut app = App::from_workspace(context, 0);
+    let mut app = App::from_workspace(context);
     let first = add_task(&mut app, 1, "Focused");
     let second = add_task(&mut app, 1, "Keep order");
     let selected = add_task(&mut app, 2, "Selected");
@@ -575,4 +578,111 @@ fn unified_edit_form_updates_the_card_identified_by_id_and_persists_it() {
     let stored_card = stored.cards.iter().find(|card| card.id == card_id).unwrap();
     assert_eq!(stored_card.title, "After");
     assert_eq!(stored_card.description, "Persisted description");
+}
+
+#[test]
+fn selected_annotations_create_one_linked_card_with_editable_defaults() {
+    let temporary = TestDirectory::new();
+    let mut app = test_app(&temporary);
+    let first = AnnotationId::generate();
+    let second = AnnotationId::generate();
+    app.annotations = vec![
+        CodeAnnotation {
+            id: first,
+            repository_id: RepositoryId::from("repo"),
+            path: "src/main.rs".to_owned(),
+            line: 10,
+            tag: "TODO".to_owned(),
+            message: "implement parser".to_owned(),
+            occurrence: 0,
+            present: true,
+            disposition: AnnotationDisposition::Unassigned,
+        },
+        CodeAnnotation {
+            id: second,
+            repository_id: RepositoryId::from("repo"),
+            path: "src/lib.rs".to_owned(),
+            line: 20,
+            tag: "FIXME".to_owned(),
+            message: "handle failure".to_owned(),
+            occurrence: 0,
+            present: true,
+            disposition: AnnotationDisposition::Unassigned,
+        },
+    ];
+    app.annotation_review = Some(AnnotationReviewState::default());
+
+    app.toggle_annotation_selection();
+    app.move_annotation_focus(1);
+    app.toggle_annotation_selection();
+    app.open_annotation_card_form();
+
+    let form = app.task_form.as_ref().unwrap();
+    assert!(matches!(
+        &form.mode,
+        TaskFormMode::CreateFromAnnotations(ids) if ids.len() == 2
+    ));
+    assert_eq!(form.priority, TaskPriority::HIGH);
+    assert_eq!(form.target_column, Some(0));
+    press_ctrl(&mut app, 's');
+
+    assert_eq!(app.columns[0].tasks.len(), 1);
+    let card_id = app.columns[0].tasks[0].id;
+    assert!(app.annotations.iter().all(|annotation| matches!(
+        annotation.disposition,
+        AnnotationDisposition::Linked { card_id: linked } if linked == card_id
+    )));
+    let stored = app.private_store.load_cards().unwrap();
+    assert_eq!(stored.annotations.len(), 2);
+
+    app.annotation_review.as_mut().unwrap().filter = crate::tui::state::AnnotationFilter::All;
+    let backend = TestBackend::new(120, 30);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    let review = terminal.backend().to_string();
+    assert!(review.contains("LINKED"));
+    assert!(review.contains("repo / src/main.rs"));
+
+    press(&mut app, KeyCode::Esc);
+    press(&mut app, KeyCode::Enter);
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    let details = terminal.backend().to_string();
+    assert!(details.contains("Sources"));
+    assert!(details.contains("[present] repo:src/main.rs:10"));
+}
+
+#[test]
+fn ctrl_r_scans_in_background_and_plain_s_remains_unbound() {
+    let temporary = TestDirectory::new();
+    let mut app = test_app(&temporary);
+    app.workspace_config.repositories.push(RepositoryConfig {
+        id: RepositoryId::from("repo"),
+        path: ".".to_owned(),
+    });
+    fs::write(
+        app.workspace_root.join("main.rs"),
+        "// TODO: discovered asynchronously\n",
+    )
+    .unwrap();
+
+    press(&mut app, KeyCode::Char('s'));
+    assert!(app.annotation_sync.is_none());
+    app.annotation_review = Some(AnnotationReviewState::default());
+    press_ctrl(&mut app, 'r');
+    assert!(app.annotation_sync.is_some());
+    let backend = TestBackend::new(100, 24);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    assert!(terminal.backend().to_string().contains("syncing…"));
+    for _ in 0..200 {
+        app.poll_annotation_sync();
+        if app.annotation_sync.is_none() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+
+    assert!(app.annotation_sync.is_none());
+    assert_eq!(app.annotations.len(), 1);
+    assert!(app.annotation_review.is_some());
 }

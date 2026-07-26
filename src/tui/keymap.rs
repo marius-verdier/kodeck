@@ -9,6 +9,7 @@ pub(super) enum KeyContext {
     Confirmation,
     Goto,
     Help,
+    Annotations,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,6 +52,12 @@ pub(super) enum Action {
     ToggleChoice,
     ScrollUp,
     ScrollDown,
+    SyncAnnotations,
+    AnnotationPrevious,
+    AnnotationNext,
+    CreateFromAnnotations,
+    IgnoreAnnotations,
+    CycleAnnotationFilter,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -205,6 +212,14 @@ const BINDINGS: &[Binding] = &[
         "Navigation"
     ),
     binding!(Board, KeySpec::Char('?'), ShowHelp, "?", "help", "Global"),
+    binding!(
+        Board,
+        KeySpec::Ctrl('r'),
+        SyncAnnotations,
+        "Ctrl+R",
+        "sync annotations",
+        "Global"
+    ),
     binding!(
         Board,
         KeySpec::Code(KeyCode::Esc),
@@ -432,6 +447,65 @@ const BINDINGS: &[Binding] = &[
         "close",
         "Help"
     ),
+    binding!(
+        Annotations,
+        KeySpec::Char('k'),
+        AnnotationPrevious,
+        "j/k",
+        "navigate",
+        "Annotations"
+    ),
+    alias!(Annotations, KeySpec::Char('j'), AnnotationNext),
+    alias!(Annotations, KeySpec::Code(KeyCode::Up), AnnotationPrevious),
+    alias!(Annotations, KeySpec::Code(KeyCode::Down), AnnotationNext),
+    binding!(
+        Annotations,
+        KeySpec::Char(' '),
+        ToggleSelection,
+        "Space",
+        "select",
+        "Annotations"
+    ),
+    binding!(
+        Annotations,
+        KeySpec::Char('c'),
+        CreateFromAnnotations,
+        "c",
+        "create card",
+        "Annotations"
+    ),
+    binding!(
+        Annotations,
+        KeySpec::Char('i'),
+        IgnoreAnnotations,
+        "i",
+        "ignore",
+        "Annotations"
+    ),
+    binding!(
+        Annotations,
+        KeySpec::Char('f'),
+        CycleAnnotationFilter,
+        "f",
+        "filter",
+        "Annotations"
+    ),
+    binding!(
+        Annotations,
+        KeySpec::Ctrl('r'),
+        SyncAnnotations,
+        "Ctrl+R",
+        "rescan",
+        "Annotations"
+    ),
+    binding!(
+        Annotations,
+        KeySpec::Code(KeyCode::Esc),
+        Close,
+        "Esc",
+        "close",
+        "Annotations"
+    ),
 ];
 
 pub(super) fn resolve(context: KeyContext, key: KeyEvent) -> Option<Action> {
@@ -452,7 +526,17 @@ pub(super) fn footer_hints(context: KeyContext) -> String {
             Action::ToggleSelection,
             Action::EnterGoto,
             Action::ShowHelp,
+            Action::SyncAnnotations,
             Action::Quit,
+        ],
+        KeyContext::Annotations => &[
+            Action::AnnotationPrevious,
+            Action::ToggleSelection,
+            Action::CreateFromAnnotations,
+            Action::IgnoreAnnotations,
+            Action::CycleAnnotationFilter,
+            Action::SyncAnnotations,
+            Action::Close,
         ],
         _ => &[],
     };
@@ -607,6 +691,20 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_r_syncs_annotations_but_plain_s_does_nothing() {
+        let sync = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL);
+        assert_eq!(
+            resolve(KeyContext::Board, sync),
+            Some(Action::SyncAnnotations)
+        );
+        assert_eq!(
+            resolve(KeyContext::Annotations, sync),
+            Some(Action::SyncAnnotations)
+        );
+        assert_eq!(resolve(KeyContext::Board, key(KeyCode::Char('s'))), None);
+    }
+
+    #[test]
     fn help_and_footer_are_derived_from_bindings() {
         assert!(footer_hints(KeyContext::Board).contains("n new card"));
         assert!(footer_hints(KeyContext::Board).contains("[/] reorder columns"));
@@ -614,6 +712,7 @@ mod tests {
         let help = help_lines().join("\n");
         assert!(help.contains("Navigation"));
         assert!(help.contains("Ctrl+S"));
+        assert!(help.contains("Ctrl+R"));
         assert!(help.contains("[/]"));
         assert!(!help.contains("t new card"));
     }

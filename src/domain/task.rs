@@ -37,6 +37,7 @@ pub struct Task {
     pub priority: TaskPriority,
     pub order: usize,
     pub done: bool,
+    pub archived_by_sync: bool,
 }
 
 impl Task {
@@ -48,6 +49,7 @@ impl Task {
             priority,
             order,
             done: false,
+            archived_by_sync: false,
         }
     }
 
@@ -59,6 +61,7 @@ impl Task {
             priority: card.priority,
             order,
             done: false,
+            archived_by_sync: card.archived_by_sync,
         }
     }
 }

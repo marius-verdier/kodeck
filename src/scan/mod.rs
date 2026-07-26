@@ -1,28 +1,57 @@
 use rayon::prelude::*;
+use std::path::Path;
 
-use crate::domain::Finding;
+use crate::domain::{AnnotationTagMapping, Finding, RepositoryId, WorkspaceConfig};
 use crate::workspace::{RepositoryAvailability, WorkspaceContext, inspect_repositories};
 
+mod reconcile;
 pub mod searcher;
 pub mod walker;
 
 pub fn run_scan(root: &str) -> Vec<Finding> {
-    let regex = searcher::build_regex();
-    let paths = walker::collect_paths(root);
+    scan_repository(
+        Path::new(root),
+        &RepositoryId::from("repository"),
+        &AnnotationTagMapping::defaults(),
+    )
+}
 
-    paths
+pub fn scan_workspace(root: &Path, config: &WorkspaceConfig) -> Vec<Finding> {
+    inspect_repositories(root, config)
+        .into_par_iter()
+        .filter_map(|repository| match repository {
+            RepositoryAvailability::Available { id, path } => Some((id, path)),
+            RepositoryAvailability::Missing { .. } => None,
+        })
+        .flat_map(|(id, path)| scan_repository(&path, &id, &config.annotation_tags))
+        .collect()
+}
+
+fn scan_repository(
+    root: &Path,
+    repository_id: &RepositoryId,
+    mappings: &[AnnotationTagMapping],
+) -> Vec<Finding> {
+    let tags: Vec<_> = mappings.iter().map(|mapping| mapping.tag.clone()).collect();
+    let Some(regex) = searcher::build_regex(&tags) else {
+        return Vec::new();
+    };
+    walker::collect_paths(&root.to_string_lossy())
         .par_iter()
-        .flat_map(|path| searcher::search_file(path, &regex))
+        .flat_map(|file| {
+            let file = Path::new(file);
+            let relative = file
+                .strip_prefix(root)
+                .unwrap_or(file)
+                .to_string_lossy()
+                .replace('\\', "/");
+            searcher::search_file(file, &relative, repository_id, &regex)
+        })
         .collect()
 }
 
 pub fn run_workspace_scan(context: &WorkspaceContext) -> Vec<Finding> {
-    inspect_repositories(&context.root, &context.config)
-        .into_par_iter()
-        .filter_map(|repository| match repository {
-            RepositoryAvailability::Available { path, .. } => Some(path),
-            RepositoryAvailability::Missing { .. } => None,
-        })
-        .flat_map(|path| run_scan(&path.to_string_lossy()))
-        .collect()
+    scan_workspace(&context.root, &context.config)
 }
+
+pub use reconcile::{AnnotationSyncSummary, reconcile_annotations};

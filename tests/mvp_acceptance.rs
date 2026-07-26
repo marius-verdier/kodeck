@@ -73,6 +73,7 @@ fn workspace_mvp_keeps_shared_identity_and_private_state_across_its_lifecycle() 
         priority: TaskPriority::MEDIUM,
         column_id: todo.clone(),
         archived: false,
+        archived_by_sync: false,
     });
     cards.ordering = BTreeMap::from([(todo.clone(), vec![card_id])]);
     initialized.private_store().save_cards(&cards).unwrap();

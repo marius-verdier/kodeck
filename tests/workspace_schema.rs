@@ -1,6 +1,7 @@
 use kodeck::domain::{
-    ColumnConfig, ColumnId, ProviderConfig, ProviderId, RepositoryConfig, RepositoryId,
-    StatusMapping, WORKSPACE_SCHEMA_VERSION, WorkspaceConfig, WorkspaceId,
+    AnnotationTagMapping, ColumnConfig, ColumnId, ProviderConfig, ProviderId, RepositoryConfig,
+    RepositoryId, StatusMapping, TaskPriority, WORKSPACE_SCHEMA_VERSION, WorkspaceConfig,
+    WorkspaceId,
 };
 use uuid::Uuid;
 
@@ -26,6 +27,7 @@ fn valid_workspace() -> WorkspaceConfig {
             provider_status: "workflow::todo".to_owned(),
             column_id: ColumnId::from("todo"),
         }],
+        annotation_tags: AnnotationTagMapping::defaults(),
     }
 }
 
@@ -56,6 +58,7 @@ fn deserializes_the_workspace_specification_example() {
     let workspace: WorkspaceConfig = serde_json::from_str(&json).unwrap();
 
     assert_eq!(workspace.status_mappings, Vec::new());
+    assert_eq!(workspace.annotation_tags, AnnotationTagMapping::defaults());
     assert_eq!(workspace.id.to_string(), WORKSPACE_ID);
     assert!(workspace.validate().is_ok());
 }
@@ -107,6 +110,7 @@ fn constructor_uses_schema_version_and_default_columns() {
         .collect();
 
     assert_eq!(workspace.schema_version, 1);
+    assert_eq!(workspace.annotation_tags, AnnotationTagMapping::defaults());
     assert_eq!(
         columns,
         vec![
@@ -117,6 +121,57 @@ fn constructor_uses_schema_version_and_default_columns() {
             ("done", "Done"),
         ]
     );
+}
+
+#[test]
+fn explicit_empty_annotation_tags_disable_scanning() {
+    let json = format!(
+        r#"{{
+            "schema_version": 1,
+            "id": "{WORKSPACE_ID}",
+            "name": "No annotations",
+            "columns": [{{ "id": "inbox", "name": "Inbox" }}],
+            "annotation_tags": []
+        }}"#
+    );
+
+    let workspace: WorkspaceConfig = serde_json::from_str(&json).unwrap();
+
+    assert!(workspace.annotation_tags.is_empty());
+    assert!(workspace.validate().is_ok());
+}
+
+#[test]
+fn validates_annotation_tag_uniqueness_syntax_and_column_references() {
+    let mut workspace = valid_workspace();
+    workspace.annotation_tags = vec![
+        AnnotationTagMapping {
+            tag: "TODO".to_owned(),
+            column_id: ColumnId::from("inbox"),
+            priority: TaskPriority::LOW,
+        },
+        AnnotationTagMapping {
+            tag: "todo".to_owned(),
+            column_id: ColumnId::from("missing"),
+            priority: TaskPriority::HIGH,
+        },
+        AnnotationTagMapping {
+            tag: "NOT VALID".to_owned(),
+            column_id: ColumnId::from("inbox"),
+            priority: TaskPriority::LOW,
+        },
+    ];
+
+    let errors = workspace.validate().unwrap_err();
+    let paths: Vec<_> = errors
+        .issues()
+        .iter()
+        .map(|issue| issue.path.as_str())
+        .collect();
+
+    assert!(paths.contains(&"annotation_tags[1].tag"));
+    assert!(paths.contains(&"annotation_tags[1].column_id"));
+    assert!(paths.contains(&"annotation_tags[2].tag"));
 }
 
 #[test]
